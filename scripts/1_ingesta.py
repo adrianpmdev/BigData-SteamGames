@@ -1,42 +1,51 @@
 """
 Descarga los juegos de Steam desde la API de Steam y SteamSpy y los guarda en
-data/raw/<fecha>/. Solo guarda los juegos lanzados entre 2020 y 2025 (ambos
-incluidos) y, de cada llamada, solo los campos que usa el análisis. Si se
-interrumpe, al relanzarlo continúa donde lo dejó.
+data/raw/<fecha>/. Solo guarda los juegos con alguna fecha de lanzamiento entre 2020
+y 2025 y, de cada llamada, solo los campos que usa el análisis. Si se interrumpe, al
+relanzarlo continúa donde lo dejó.
 
 Funcionamiento
 --------------
 1. Lista: descarga la lista de juegos de la tienda (solo si no existe).
-2. Filtro de periodo: pide a GetItems la fecha de lanzamiento de la lista en lotes
-   de 100 y se queda con los juegos que pueden ser de 2020-2025. Es permisivo: solo
-   descarta lo seguro (no ha salido o todas sus fechas de Steam están fuera del
-   periodo); ante la duda, el juego pasa y appdetails decide.
+2. Filtro de periodo: pide a GetItems las fechas de la lista en lotes de 100 y se queda
+   con los juegos que pueden ser del periodo. Solo descarta lo seguro (no es un juego,
+   no ha salido o todas sus fechas están fuera); ante la duda, el juego pasa.
 3. Datos por juego: recorre los juegos del filtro uno a uno:
-     appdetails -> si no es un juego lanzado en 2020-2025, se descarta y se pasa al siguiente.
-     reviews    -> solo para los juegos que siguen.
-     steamspy   -> solo para los juegos que siguen.
-   Cada servidor tiene su propio ritmo de peticiones, así que las tres llamadas
-   de un juego no se esperan entre sí.
+     fichas                  -> si no es un juego del periodo, se descarta y se pasa al siguiente.
+     resenas                 -> solo para los juegos que siguen.
+     propietarios_etiquetas  -> solo para los juegos que siguen.
+   Cada servidor tiene su propio ritmo de peticiones, así que las tres llamadas de un
+   juego no se esperan entre sí.
+
+Criterio de periodo
+-------------------
+Un juego es del periodo si cualquiera de sus fechas cae entre 2020 y 2025: la de la
+ficha de la tienda, la de lanzamiento en Steam, la original (p. ej. inicio del acceso
+anticipado) o la de salida del acceso anticipado. Las fechas de GetItems llevan un día
+de margen en cada extremo (31/12/2019 y 01/01/2026) porque están en UTC y Steam usa la
+hora del Pacífico. Se guardan todas las fechas para decidir en la preparación cuál usar.
 
 Archivos generados
 ------------------
-    games_list.jsonl         Lista de juegos de la tienda (Steam, IStoreService/GetAppList).
-    games_period.jsonl       Juegos que pasan el filtro de periodo (Steam, IStoreBrowseService/GetItems):
-                             name, steam_release_date.
-    games_details.jsonl      Ficha (Steam, store/api/appdetails): name, release_date, genres,
-                             categories, is_free, price_initial (céntimos de euro), discount_percent,
-                             currency, supported_languages.
-    games_reviews.jsonl      Reseñas (Steam, IUserReviewsService/GetAppReviews): total_positive,
-                             total_negative.
-    games_owners_tags.jsonl  Propietarios y tags (SteamSpy, appdetails): owners, tags.
-    games_discarded.jsonl    Juegos que no son del periodo, con la fase que los descartó
-                             (descartado_en: period o details), para no volver a pedirlos.
+    juegos_lista.jsonl                   Lista de juegos de la tienda (Steam, IStoreService/GetAppList).
+    juegos_periodo.jsonl                 Juegos que pasan el filtro de periodo (Steam, IStoreBrowseService/GetItems):
+                                         nombre, fecha_lanzamiento_steam, fecha_lanzamiento_original,
+                                         fecha_salida_acceso_anticipado (AAAA-MM-DD en UTC).
+    juegos_fichas.jsonl                  Ficha (Steam, store/api/appdetails): nombre, fecha_lanzamiento
+                                         (texto de la tienda), las tres fechas de juegos_periodo, generos,
+                                         categorias, es_gratis, precio_base_centimos (céntimos de euro),
+                                         descuento_pct, moneda, idiomas.
+    juegos_resenas.jsonl                 Reseñas (Steam, IUserReviewsService/GetAppReviews):
+                                         resenas_positivas, resenas_negativas.
+    juegos_propietarios_etiquetas.jsonl  Propietarios y etiquetas (SteamSpy, appdetails): propietarios, etiquetas.
+    juegos_descartados.jsonl             Juegos descartados, con la fase (descartado_en: periodo o fichas)
+                                         y el motivo: sin_ficha, no_es_juego, no_lanzado o fuera_periodo.
 
 Argumentos
 ----------
-    --api-key   Steam Web API key. Solo hace falta si games_list.jsonl no existe.
+    --api-key   Steam Web API key. Solo hace falta si juegos_lista.jsonl no existe.
     --fecha     Nombre de la carpeta de la captura. Por defecto, la fecha de hoy.
-    --limite    Recorre solo los N primeros juegos de games_list.jsonl (para pruebas).
+    --limite    Recorre solo los N primeros juegos de juegos_lista.jsonl (para pruebas).
 
 Uso
 ---
@@ -44,7 +53,7 @@ Uso
     python scripts/1_ingesta.py --api-key CLAVE --fecha prueba --limite 100
 
     # Captura completa (para continuar tras un corte, el mismo comando)
-    python scripts/1_ingesta.py --api-key CLAVE --fecha 2026-11-18
+    python scripts/1_ingesta.py --api-key CLAVE --fecha AAAA-MM-DD
 """
 from __future__ import annotations
 
@@ -56,7 +65,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -67,10 +76,10 @@ from typing import Any
 
 DIR_RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
 
-URL_LISTA_APPS = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
+URL_LISTA_JUEGOS = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
 URL_ITEMS_TIENDA = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
 USER_AGENT = "steam-games-ingesta/1.0"
-TIMEOUT_S = 30
+ESPERA_MAXIMA_RESPUESTA_S = 30
 MAX_REINTENTOS = 5
 ESPERA_ERROR_S = 60
 LOG_CADA = 50              # juegos entre cada línea de progreso (datos por juego)
@@ -79,28 +88,43 @@ ANCHO_CABECERA = 70
 
 ANIO_INICIO = 2020
 ANIO_FIN = 2025
+# Un día de margen en cada extremo para las fechas de GetItems (UTC frente a hora del Pacífico).
+FECHA_MINIMA = date(ANIO_INICIO, 1, 1) - timedelta(days=1)
+FECHA_MAXIMA = date(ANIO_FIN, 12, 31) + timedelta(days=1)
+# Formatos de fecha de la ficha de la tienda, según la región ("19 Nov, 2020" o "Nov 19, 2020").
+FORMATOS_FECHA_TIENDA = ("%d %b, %Y", "%b %d, %Y")
 
 # Filtro de periodo: GetItems admite 100 juegos por petición (con 500 da HTTP 400).
 TAMANO_LOTE_FILTRO = 100
 INTERVALO_FILTRO_S = 1.5
-# Fechas de Steam que se miran en el filtro: si alguna cae en el periodo, el juego pasa.
-CAMPOS_FECHA_STEAM = ("steam_release_date", "original_steam_release_date", "release_from_early_access_date")
+# Fechas de GetItems (campo de Steam -> nombre con el que se guarda).
+CAMPOS_FECHA_STEAM = {
+    "steam_release_date": "fecha_lanzamiento_steam",
+    "original_steam_release_date": "fecha_lanzamiento_original",
+    "release_from_early_access_date": "fecha_salida_acceso_anticipado",
+}
 
-ARCHIVO_LISTA_JUEGOS = "games_list.jsonl"
-ARCHIVO_PERIODO = "games_period.jsonl"
-ARCHIVO_DESCARTADOS = "games_discarded.jsonl"
+ARCHIVO_LISTA_JUEGOS = "juegos_lista.jsonl"
+ARCHIVO_PERIODO = "juegos_periodo.jsonl"
+ARCHIVO_DESCARTADOS = "juegos_descartados.jsonl"
 
-# Llamadas que se hacen una vez por juego, en el orden en que se piden:
-# appdetails decide si se piden las demás. intervalo_s = segundos mínimos entre
-# peticiones a esa misma fuente; archivo = dónde se guardan sus campos.
+# Motivos de descarte.
+MOTIVO_SIN_FICHA = "sin_ficha"            # La ficha no existe o no está disponible en la región.
+MOTIVO_NO_ES_JUEGO = "no_es_juego"        # DLC, demo, banda sonora...
+MOTIVO_NO_LANZADO = "no_lanzado"          # Todavía no ha salido ("Coming soon").
+MOTIVO_FUERA_PERIODO = "fuera_periodo"    # Ninguna de sus fechas cae en el periodo.
+
+# Llamadas que se hacen una vez por juego, en el orden en que se piden: fichas
+# decide si se piden las demás. intervalo_s = segundos mínimos entre peticiones a
+# esa misma fuente; archivo = dónde se guardan sus campos.
 FUENTES: dict[str, dict[str, Any]] = {
     # appdetails admite unas 200 peticiones cada 5 minutos: a 1 s da HTTP 429.
-    "appdetails": {"url": "https://store.steampowered.com/api/appdetails",
-                   "intervalo_s": 1.5, "archivo": "games_details.jsonl"},
-    "reviews": {"url": "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/",
-                "intervalo_s": 1.0, "archivo": "games_reviews.jsonl"},
-    "steamspy": {"url": "https://steamspy.com/api.php",
-                 "intervalo_s": 1.0, "archivo": "games_owners_tags.jsonl"},
+    "fichas": {"url": "https://store.steampowered.com/api/appdetails",
+               "intervalo_s": 1.5, "archivo": "juegos_fichas.jsonl"},
+    "resenas": {"url": "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/",
+                "intervalo_s": 1.0, "archivo": "juegos_resenas.jsonl"},
+    "propietarios_etiquetas": {"url": "https://steamspy.com/api.php",
+                               "intervalo_s": 1.0, "archivo": "juegos_propietarios_etiquetas.jsonl"},
 }
 
 # Momento (time.monotonic) de la última petición a cada fuente.
@@ -114,6 +138,96 @@ log = logging.getLogger("ingesta")
 # =========================================================================== #
 
 # --------------------------------------------------------------------------- #
+# Fechas: criterio de periodo                                                 #
+# --------------------------------------------------------------------------- #
+
+def esta_en_periodo(fecha: date) -> bool:
+    """
+    Indica si una fecha está en el periodo, con un día de margen en cada extremo.
+
+    Parámetros
+    ----------
+    fecha : fecha a comprobar.
+
+    Devuelve
+    --------
+    True si está entre FECHA_MINIMA y FECHA_MAXIMA (ambas incluidas).
+    """
+    return FECHA_MINIMA <= fecha <= FECHA_MAXIMA
+
+
+def fecha_tienda_en_periodo(texto: str) -> bool:
+    """
+    Indica si la fecha de la ficha de la tienda está en el periodo.
+
+    Si el texto es una fecha completa ("19 Nov, 2020"), se compara la fecha; si no
+    ("Nov 2020", "Q4 2020", "2020"), solo el año.
+
+    Parámetros
+    ----------
+    texto : fecha de lanzamiento tal como la muestra la tienda.
+
+    Devuelve
+    --------
+    True si está en el periodo; False si no o si no hay año.
+    """
+    for formato in FORMATOS_FECHA_TIENDA:
+        try:
+            return esta_en_periodo(datetime.strptime(texto, formato).date())
+        except ValueError:
+            continue
+    anio = re.search(r"\b\d{4}\b", texto)
+    return bool(anio) and ANIO_INICIO <= int(anio.group()) <= ANIO_FIN
+
+
+def convertir_timestamp_a_fecha(timestamp: int) -> date:
+    """
+    Convierte una fecha Unix (segundos, UTC) en fecha.
+
+    Parámetros
+    ----------
+    timestamp : segundos desde 1970-01-01 UTC.
+
+    Devuelve
+    --------
+    Fecha correspondiente.
+    """
+    return datetime.fromtimestamp(timestamp, timezone.utc).date()
+
+
+def extraer_fechas_steam(item: dict[str, Any] | None) -> dict[str, str | None]:
+    """
+    Extrae las fechas de lanzamiento de los datos de GetItems.
+
+    Parámetros
+    ----------
+    item : datos del juego en GetItems, o None si no vino en la respuesta.
+
+    Devuelve
+    --------
+    Cada fecha de CAMPOS_FECHA_STEAM con su nombre guardado, en AAAA-MM-DD (UTC) o None.
+    """
+    lanzamiento = (item or {}).get("release") or {}
+    return {nombre: convertir_timestamp_a_fecha(lanzamiento[campo]).isoformat() if lanzamiento.get(campo) else None
+            for campo, nombre in CAMPOS_FECHA_STEAM.items()}
+
+
+def alguna_fecha_steam_en_periodo(fechas: dict[str, str | None]) -> bool:
+    """
+    Indica si alguna de las fechas de GetItems está en el periodo.
+
+    Parámetros
+    ----------
+    fechas : fechas en AAAA-MM-DD o None (ver extraer_fechas_steam).
+
+    Devuelve
+    --------
+    True si alguna está en el periodo.
+    """
+    return any(esta_en_periodo(date.fromisoformat(fecha)) for fecha in fechas.values() if fecha)
+
+
+# --------------------------------------------------------------------------- #
 # Fuentes: parámetros de cada petición y campos que se guardan                #
 # --------------------------------------------------------------------------- #
 
@@ -121,11 +235,11 @@ def construir_params(nombre: str, appid: int) -> dict[str, str]:
     """
     Construye los parámetros de la petición a una fuente para un juego.
 
-    - appdetails: precios en euros (cc=es) y textos en inglés (l=english), para que
+    - fichas: precios en euros (cc=es) y textos en inglés (l=english), para que
       géneros y categorías tengan siempre el mismo nombre.
-    - reviews: una sola reseña (num_per_page=1), porque solo interesa el resumen
+    - resenas: una sola reseña (num_per_page=1), porque solo interesa el resumen
       (query_summary); con 0, Steam devuelve 20. purchase_type=1 incluye todas las compras.
-    - steamspy: ficha del juego.
+    - propietarios_etiquetas: ficha del juego en SteamSpy.
 
     Parámetros
     ----------
@@ -140,33 +254,35 @@ def construir_params(nombre: str, appid: int) -> dict[str, str]:
     -----
     ValueError : si la fuente no existe.
     """
-    if nombre == "appdetails":
+    if nombre == "fichas":
         return {"appids": str(appid), "cc": "es", "l": "english"}
-    if nombre == "reviews":
+    if nombre == "resenas":
         consulta = {"appid": appid, "num_per_page": 1, "languages": ["all"],
                     "review_type": 0, "purchase_type": 1}
         return {"input_json": json.dumps(consulta)}
-    if nombre == "steamspy":
+    if nombre == "propietarios_etiquetas":
         return {"request": "appdetails", "appid": str(appid)}
     raise ValueError(f"fuente desconocida: {nombre}")
 
 
-def extraer_campos_appdetails(appid: int, respuesta: Any) -> dict[str, Any] | None:
+def extraer_campos_fichas(appid: int, respuesta: Any,
+                          fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
     """
     Se queda con los campos útiles de la ficha si el juego es del periodo de análisis.
 
-    Descarta las fichas sin datos, lo que no es un juego, los juegos no lanzados
-    ("Coming soon") y los lanzados fuera de ANIO_INICIO-ANIO_FIN. De la fecha
-    ("19 Nov, 2020" o "Nov 19, 2020" según la región) solo se mira el año.
+    Descarta el juego si no hay ficha, no es un juego, no ha salido o ninguna de sus
+    fechas está en el periodo.
 
     Parámetros
     ----------
-    appid     : identificador del juego en Steam.
-    respuesta : JSON devuelto por appdetails.
+    appid        : identificador del juego en Steam.
+    respuesta    : JSON devuelto por appdetails.
+    fechas_steam : fechas del juego en GetItems (de juegos_periodo.jsonl).
 
     Devuelve
     --------
-    Campos del juego, o None si se descarta.
+    (campos, None) con los campos del juego, incluidas todas sus fechas, o
+    (None, motivo) si se descarta.
 
     Lanza
     -----
@@ -174,34 +290,38 @@ def extraer_campos_appdetails(appid: int, respuesta: Any) -> dict[str, Any] | No
     """
     ficha = respuesta[str(appid)]
     if not ficha.get("success"):
-        return None
+        return None, MOTIVO_SIN_FICHA
     datos = ficha["data"]
     if datos.get("type") != "game":
-        return None
+        return None, MOTIVO_NO_ES_JUEGO
 
     lanzamiento = datos.get("release_date") or {}
-    anio = re.search(r"\b\d{4}\b", lanzamiento.get("date", ""))
-    if lanzamiento.get("coming_soon") or not anio or not ANIO_INICIO <= int(anio.group()) <= ANIO_FIN:
-        return None
+    if lanzamiento.get("coming_soon"):
+        return None, MOTIVO_NO_LANZADO
+    fecha_tienda = lanzamiento.get("date", "")
+    if not fecha_tienda_en_periodo(fecha_tienda) and not alguna_fecha_steam_en_periodo(fechas_steam):
+        return None, MOTIVO_FUERA_PERIODO
 
     # initial = precio sin descuento, en céntimos; discount_percent = rebaja activa el
     # día de la petición. No vienen si el juego es gratis o no se vende en la región.
     precio = datos.get("price_overview") or {}
-    return {
-        "name": datos.get("name"),
-        "release_date": lanzamiento["date"],
-        "genres": [genero["description"] for genero in datos.get("genres", [])],
-        "categories": [categoria["description"] for categoria in datos.get("categories", [])],
-        "is_free": datos.get("is_free"),
-        "price_initial": precio.get("initial"),
-        "discount_percent": precio.get("discount_percent"),
-        "currency": precio.get("currency"),
+    campos = {
+        "nombre": datos.get("name"),
+        "fecha_lanzamiento": fecha_tienda,
+        **fechas_steam,
+        "generos": [genero["description"] for genero in datos.get("genres", [])],
+        "categorias": [categoria["description"] for categoria in datos.get("categories", [])],
+        "es_gratis": datos.get("is_free"),
+        "precio_base_centimos": precio.get("initial"),
+        "descuento_pct": precio.get("discount_percent"),
+        "moneda": precio.get("currency"),
         # Texto con HTML; los idiomas marcados con * tienen audio completo.
-        "supported_languages": datos.get("supported_languages"),
+        "idiomas": datos.get("supported_languages"),
     }
+    return campos, None
 
 
-def extraer_campos_reviews(respuesta: Any) -> dict[str, Any]:
+def extraer_campos_resenas(respuesta: Any) -> dict[str, Any]:
     """
     Se queda con el número de reseñas positivas y negativas.
 
@@ -211,23 +331,23 @@ def extraer_campos_reviews(respuesta: Any) -> dict[str, Any]:
 
     Devuelve
     --------
-    total_positive y total_negative.
+    resenas_positivas y resenas_negativas.
 
     Lanza
     -----
     KeyError, TypeError : si la respuesta no tiene el formato esperado.
     """
     resumen = respuesta["response"]["query_summary"]
-    return {"total_positive": resumen["total_positive"],
-            "total_negative": resumen["total_negative"]}
+    return {"resenas_positivas": resumen["total_positive"],
+            "resenas_negativas": resumen["total_negative"]}
 
 
-def extraer_campos_steamspy(respuesta: Any) -> dict[str, Any]:
+def extraer_campos_propietarios_etiquetas(respuesta: Any) -> dict[str, Any]:
     """
-    Se queda con el rango de propietarios y los nombres de los tags.
+    Se queda con el rango de propietarios y los nombres de las etiquetas.
 
-    SteamSpy envía los tags como {"Indie": 120, ...}, ordenados por votos, o como []
-    si el juego no tiene; se guardan solo los nombres, en ese orden.
+    SteamSpy envía las etiquetas como {"Indie": 120, ...}, ordenadas por votos, o como
+    [] si el juego no tiene; se guardan solo los nombres, en ese orden.
 
     Parámetros
     ----------
@@ -235,37 +355,39 @@ def extraer_campos_steamspy(respuesta: Any) -> dict[str, Any]:
 
     Devuelve
     --------
-    owners y tags.
+    propietarios y etiquetas.
     """
-    return {"owners": respuesta.get("owners"),
-            "tags": list(respuesta.get("tags") or [])}
+    return {"propietarios": respuesta.get("owners"),
+            "etiquetas": list(respuesta.get("tags") or [])}
 
 
-def extraer_campos(nombre: str, appid: int, respuesta: Any) -> dict[str, Any] | None:
+def extraer_campos(nombre: str, appid: int, respuesta: Any,
+                   fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
     """
     Se queda con los campos útiles de la respuesta de una fuente.
 
     Parámetros
     ----------
-    nombre    : clave de la fuente en FUENTES.
-    appid     : identificador del juego en Steam.
-    respuesta : JSON devuelto por la fuente.
+    nombre       : clave de la fuente en FUENTES.
+    appid        : identificador del juego en Steam.
+    respuesta    : JSON devuelto por la fuente.
+    fechas_steam : fechas del juego en GetItems (solo las usa fichas).
 
     Devuelve
     --------
-    Campos del juego, o None si se descarta (solo appdetails descarta).
+    (campos, None), o (None, motivo) si se descarta (solo fichas descarta).
 
     Lanza
     -----
     KeyError, TypeError : si la respuesta no tiene el formato esperado.
     ValueError          : si la fuente no existe.
     """
-    if nombre == "appdetails":
-        return extraer_campos_appdetails(appid, respuesta)
-    if nombre == "reviews":
-        return extraer_campos_reviews(respuesta)
-    if nombre == "steamspy":
-        return extraer_campos_steamspy(respuesta)
+    if nombre == "fichas":
+        return extraer_campos_fichas(appid, respuesta, fechas_steam)
+    if nombre == "resenas":
+        return extraer_campos_resenas(respuesta), None
+    if nombre == "propietarios_etiquetas":
+        return extraer_campos_propietarios_etiquetas(respuesta), None
     raise ValueError(f"fuente desconocida: {nombre}")
 
 
@@ -294,28 +416,13 @@ def construir_params_items_tienda(appids: list[int]) -> dict[str, str]:
     return {"input_json": json.dumps(consulta)}
 
 
-def convertir_timestamp_a_fecha(timestamp: int) -> date:
-    """
-    Convierte una fecha Unix (segundos, UTC) en fecha.
-
-    Parámetros
-    ----------
-    timestamp : segundos desde 1970-01-01 UTC.
-
-    Devuelve
-    --------
-    Fecha correspondiente.
-    """
-    return datetime.fromtimestamp(timestamp, timezone.utc).date()
-
-
-def es_candidato_del_periodo(item: dict[str, Any] | None) -> bool:
+def obtener_motivo_descarte_periodo(item: dict[str, Any] | None) -> str | None:
     """
     Decide si un juego puede ser del periodo según los datos de GetItems.
 
-    Es permisivo: solo descarta lo seguro (otro tipo de producto, juego no lanzado
-    o todas sus fechas de Steam fuera del periodo). Si no hay datos o no hay fechas,
-    lo deja pasar para que appdetails decida.
+    Solo descarta lo seguro (otro tipo de producto, juego no lanzado o todas sus fechas
+    fuera del periodo). Si no hay datos o no hay fechas, lo deja pasar para que
+    fichas decida.
 
     Parámetros
     ----------
@@ -323,49 +430,28 @@ def es_candidato_del_periodo(item: dict[str, Any] | None) -> bool:
 
     Devuelve
     --------
-    True si el juego pasa el filtro.
+    None si el juego pasa el filtro; si no, el motivo del descarte.
     """
     if not item or item.get("success") != 1:
-        return True
+        return None
     if item.get("type", 0) != 0:  # 0 = juego
-        return False
-    lanzamiento = item.get("release") or {}
-    if lanzamiento.get("is_coming_soon"):
-        return False
-    fechas = [lanzamiento[campo] for campo in CAMPOS_FECHA_STEAM if lanzamiento.get(campo)]
-    if not fechas:
-        return True
-    return any(ANIO_INICIO <= convertir_timestamp_a_fecha(fecha).year <= ANIO_FIN for fecha in fechas)
-
-
-def construir_registro_periodo(appid: int, item: dict[str, Any] | None) -> dict[str, Any]:
-    """
-    Construye la línea de ARCHIVO_PERIODO para un juego que pasa el filtro.
-
-    Parámetros
-    ----------
-    appid : identificador del juego en Steam.
-    item  : datos del juego en GetItems, o None si no vino en la respuesta.
-
-    Devuelve
-    --------
-    appid, fecha_peticion, name y steam_release_date (AAAA-MM-DD o None).
-    """
-    item = item or {}
-    timestamp = (item.get("release") or {}).get("steam_release_date")
-    return {"appid": appid,
-            "fecha_peticion": obtener_fecha_peticion(),
-            "name": item.get("name"),
-            "steam_release_date": convertir_timestamp_a_fecha(timestamp).isoformat() if timestamp else None}
+        return MOTIVO_NO_ES_JUEGO
+    if (item.get("release") or {}).get("is_coming_soon"):
+        return MOTIVO_NO_LANZADO
+    fechas = extraer_fechas_steam(item)
+    if not any(fechas.values()) or alguna_fecha_steam_en_periodo(fechas):
+        return None
+    return MOTIVO_FUERA_PERIODO
 
 
 def filtrar_juegos_periodo(appids: list[int], dir_captura: Path) -> None:
     """
     Pasa la lista de juegos por el filtro de periodo, en lotes de TAMANO_LOTE_FILTRO.
 
-    Los que pasan van a ARCHIVO_PERIODO y el resto a ARCHIVO_DESCARTADOS con
-    descartado_en = "period". Se salta lo ya filtrado en una ejecución anterior. Si un
-    lote falla, no se guarda y se reintenta al relanzar.
+    Los que pasan van a ARCHIVO_PERIODO (con sus fechas) y el resto a
+    ARCHIVO_DESCARTADOS con descartado_en = "periodo" y su motivo. Se salta lo ya
+    filtrado en una ejecución anterior. Si un lote falla, no se guarda y se reintenta
+    al relanzar.
 
     Parámetros
     ----------
@@ -396,13 +482,14 @@ def filtrar_juegos_periodo(appids: list[int], dir_captura: Path) -> None:
         else:
             for appid in lote:
                 item = items.get(appid)
-                if es_candidato_del_periodo(item):
-                    anadir_linea_jsonl(ruta_periodo, construir_registro_periodo(appid, item))
+                registro = {"appid": appid, "fecha_peticion": obtener_fecha_peticion()}
+                motivo = obtener_motivo_descarte_periodo(item)
+                if motivo is None:
+                    nombre = (item or {}).get("name")
+                    anadir_linea_jsonl(ruta_periodo, registro | {"nombre": nombre} | extraer_fechas_steam(item))
                     en_periodo.add(appid)
                 else:
-                    anadir_linea_jsonl(ruta_descartados, {"appid": appid,
-                                                          "fecha_peticion": obtener_fecha_peticion(),
-                                                          "descartado_en": "period"})
+                    anadir_linea_jsonl(ruta_descartados, registro | {"descartado_en": "periodo", "motivo": motivo})
                     descartados.add(appid)
 
         juegos_recorridos += len(lote)
@@ -447,7 +534,7 @@ def pedir_json_con_reintentos(url: str, params: dict[str, str]) -> Any:
 
     for intento in range(1, MAX_REINTENTOS + 1):
         try:
-            with urllib.request.urlopen(peticion, timeout=TIMEOUT_S) as respuesta:
+            with urllib.request.urlopen(peticion, timeout=ESPERA_MAXIMA_RESPUESTA_S) as respuesta:
                 datos = json.load(respuesta)
             if datos is None:
                 raise ValueError("respuesta vacía")
@@ -466,7 +553,8 @@ def pedir_json_con_reintentos(url: str, params: dict[str, str]) -> Any:
     raise RuntimeError(f"agotados {MAX_REINTENTOS} reintentos")
 
 
-def consultar_fuente(nombre: str, appid: int) -> dict[str, Any] | None:
+def consultar_fuente(nombre: str, appid: int,
+                     fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
     """
     Pide una fuente para un juego, respetando su intervalo, y extrae los campos útiles.
 
@@ -475,12 +563,13 @@ def consultar_fuente(nombre: str, appid: int) -> dict[str, Any] | None:
 
     Parámetros
     ----------
-    nombre : clave de la fuente en FUENTES.
-    appid  : identificador del juego en Steam.
+    nombre       : clave de la fuente en FUENTES.
+    appid        : identificador del juego en Steam.
+    fechas_steam : fechas del juego en GetItems (solo las usa fichas).
 
     Devuelve
     --------
-    Campos del juego, o None si se descarta.
+    (campos, None), o (None, motivo) si fichas descarta el juego.
 
     Lanza
     -----
@@ -493,7 +582,7 @@ def consultar_fuente(nombre: str, appid: int) -> dict[str, Any] | None:
         time.sleep(espera)
     try:
         respuesta = pedir_json_con_reintentos(fuente["url"], construir_params(nombre, appid))
-        return extraer_campos(nombre, appid, respuesta)
+        return extraer_campos(nombre, appid, respuesta, fechas_steam)
     finally:
         instante_ultima_peticion[nombre] = time.monotonic()
 
@@ -502,9 +591,9 @@ def consultar_fuente(nombre: str, appid: int) -> dict[str, Any] | None:
 # Archivos JSONL: lectura y escritura                                         #
 # --------------------------------------------------------------------------- #
 
-def leer_appids_jsonl(ruta: Path) -> list[int]:
+def leer_registros_jsonl(ruta: Path) -> list[dict[str, Any]]:
     """
-    Lee el appid de cada línea de un archivo JSONL, en orden.
+    Lee los registros de un archivo JSONL, en orden.
 
     Ignora las líneas incompletas que pueda dejar un corte a mitad de escritura.
 
@@ -514,18 +603,35 @@ def leer_appids_jsonl(ruta: Path) -> list[int]:
 
     Devuelve
     --------
-    Lista de appids; vacía si el archivo no existe.
+    Lista de registros; vacía si el archivo no existe.
     """
     if not ruta.exists():
         return []
-    appids = []
+    registros = []
     with ruta.open(encoding="utf-8") as archivo:
         for linea in archivo:
             try:
-                appids.append(json.loads(linea)["appid"])
-            except (ValueError, KeyError):
+                registro = json.loads(linea)
+            except ValueError:
                 continue
-    return appids
+            if isinstance(registro, dict) and "appid" in registro:
+                registros.append(registro)
+    return registros
+
+
+def leer_appids_jsonl(ruta: Path) -> list[int]:
+    """
+    Lee el appid de cada línea de un archivo JSONL, en orden.
+
+    Parámetros
+    ----------
+    ruta : archivo JSONL con un campo "appid" por línea.
+
+    Devuelve
+    --------
+    Lista de appids; vacía si el archivo no existe.
+    """
+    return [registro["appid"] for registro in leer_registros_jsonl(ruta)]
 
 
 def anadir_linea_jsonl(ruta: Path, registro: dict[str, Any]) -> None:
@@ -609,13 +715,13 @@ def obtener_etiqueta_archivo(archivo: str) -> str:
 
     Parámetros
     ----------
-    archivo : nombre del archivo (p. ej. games_owners_tags.jsonl).
+    archivo : nombre del archivo (p. ej. juegos_propietarios_etiquetas.jsonl).
 
     Devuelve
     --------
-    Nombre sin el prefijo games_ ni la extensión (p. ej. owners_tags).
+    Nombre sin el prefijo juegos_ ni la extensión (p. ej. propietarios_etiquetas).
     """
-    return archivo.removeprefix("games_").removesuffix(".jsonl")
+    return archivo.removeprefix("juegos_").removesuffix(".jsonl")
 
 
 def mostrar_cabecera(titulo: str) -> None:
@@ -641,8 +747,8 @@ def mostrar_estado_archivos(hechos: dict[str, set[int]], descartados: set[int]) 
     descartados : appids descartados.
     """
     for nombre, fuente in FUENTES.items():
-        log.info("  %-24s %10s juegos", fuente["archivo"], formatear_numero(len(hechos[nombre])))
-    log.info("  %-24s %10s juegos", ARCHIVO_DESCARTADOS, formatear_numero(len(descartados)))
+        log.info("  %-36s %10s juegos", fuente["archivo"], formatear_numero(len(hechos[nombre])))
+    log.info("  %-36s %10s juegos", ARCHIVO_DESCARTADOS, formatear_numero(len(descartados)))
 
 
 def contar_por_archivo(hechos: dict[str, set[int]], descartados: set[int]) -> dict[str, int]:
@@ -656,7 +762,7 @@ def contar_por_archivo(hechos: dict[str, set[int]], descartados: set[int]) -> di
 
     Devuelve
     --------
-    Número de juegos por etiqueta de archivo (details, reviews, owners_tags, discarded).
+    Número de juegos por etiqueta de archivo (fichas, resenas, propietarios_etiquetas, descartados).
     """
     contadores = {obtener_etiqueta_archivo(fuente["archivo"]): len(hechos[nombre])
                   for nombre, fuente in FUENTES.items()}
@@ -707,7 +813,7 @@ def descargar_lista_juegos(api_key: str, destino: Path) -> None:
     with temporal.open("w", encoding="utf-8") as archivo:
         while True:
             params = {"key": api_key, "max_results": "50000", "last_appid": str(ultimo_appid)}
-            pagina = pedir_json_con_reintentos(URL_LISTA_APPS, params)["response"]
+            pagina = pedir_json_con_reintentos(URL_LISTA_JUEGOS, params)["response"]
             for app in pagina.get("apps", []):
                 archivo.write(json.dumps(app, ensure_ascii=False) + "\n")
                 total += 1
@@ -719,28 +825,28 @@ def descargar_lista_juegos(api_key: str, destino: Path) -> None:
     temporal.replace(destino)
 
 
-def descargar_datos_por_juego(appids: list[int], dir_captura: Path) -> None:
+def descargar_datos_por_juego(juegos_periodo: list[dict[str, Any]], dir_captura: Path) -> None:
     """
-    Pide appdetails, reviews y steamspy juego a juego y guarda cada respuesta útil.
+    Pide fichas, resenas y propietarios_etiquetas juego a juego y guarda cada respuesta útil.
 
-    Se salta lo ya descargado en una ejecución anterior. Si appdetails descarta el
-    juego, lo apunta en ARCHIVO_DESCARTADOS y no pide las demás fuentes. Si una
+    Se salta lo ya descargado en una ejecución anterior. Si fichas descarta el juego,
+    lo apunta en ARCHIVO_DESCARTADOS con su motivo y no pide las demás fuentes. Si una
     petición falla, deja el juego incompleto para reintentarlo al relanzar.
 
     Parámetros
     ----------
-    appids      : juegos a recorrer (los del filtro de periodo), en orden.
-    dir_captura : carpeta de la captura (data/raw/<fecha>).
+    juegos_periodo : registros de ARCHIVO_PERIODO (appid y fechas de GetItems), en orden.
+    dir_captura    : carpeta de la captura (data/raw/<fecha>).
     """
     rutas = {nombre: dir_captura / fuente["archivo"] for nombre, fuente in FUENTES.items()}
     ruta_descartados = dir_captura / ARCHIVO_DESCARTADOS
 
     hechos = {nombre: set(leer_appids_jsonl(ruta)) for nombre, ruta in rutas.items()}
     descartados = set(leer_appids_jsonl(ruta_descartados))
-    pendientes = [appid for appid in appids
-                  if appid not in descartados and any(appid not in h for h in hechos.values())]
+    pendientes = [juego for juego in juegos_periodo
+                  if juego["appid"] not in descartados and any(juego["appid"] not in h for h in hechos.values())]
 
-    mostrar_cabecera("DATOS POR JUEGO (details -> reviews -> owners_tags)")
+    mostrar_cabecera("DATOS POR JUEGO (fichas -> resenas -> propietarios_etiquetas)")
     log.info("Ya descargado:")
     mostrar_estado_archivos(hechos, descartados)
     log.info("Pendientes: %s juegos. Progreso cada %d.", formatear_numero(len(pendientes)), LOG_CADA)
@@ -752,7 +858,7 @@ def descargar_datos_por_juego(appids: list[int], dir_captura: Path) -> None:
         mostrar_estado_archivos(hechos, descartados)
 
 
-def recorrer_juegos_pendientes(pendientes: list[int], rutas: dict[str, Path],
+def recorrer_juegos_pendientes(pendientes: list[dict[str, Any]], rutas: dict[str, Path],
                                ruta_descartados: Path, hechos: dict[str, set[int]],
                                descartados: set[int]) -> None:
     """
@@ -763,26 +869,27 @@ def recorrer_juegos_pendientes(pendientes: list[int], rutas: dict[str, Path],
 
     Parámetros
     ----------
-    pendientes       : juegos a recorrer, en orden.
+    pendientes       : registros de ARCHIVO_PERIODO a recorrer, en orden.
     rutas            : archivo de cada fuente.
     ruta_descartados : archivo de los juegos descartados.
     hechos           : appids guardados por cada fuente.
     descartados      : appids descartados.
     """
     inicio = time.monotonic()
-    for numero, appid in enumerate(pendientes, start=1):
+    for numero, juego in enumerate(pendientes, start=1):
+        appid = juego["appid"]
+        fechas_steam = {nombre: juego.get(nombre) for nombre in CAMPOS_FECHA_STEAM.values()}
         for nombre in FUENTES:
             if appid in hechos[nombre]:
                 continue
+            registro = {"appid": appid, "fecha_peticion": obtener_fecha_peticion()}
             try:
-                campos = consultar_fuente(nombre, appid)
+                campos, motivo = consultar_fuente(nombre, appid, fechas_steam)
             except (urllib.error.HTTPError, RuntimeError, KeyError, TypeError) as error:
                 log.error("%s: appid %d no descargado (%s: %s).", nombre, appid, type(error).__name__, error)
                 break
-
-            registro = {"appid": appid, "fecha_peticion": obtener_fecha_peticion()}
-            if campos is None:
-                anadir_linea_jsonl(ruta_descartados, registro | {"descartado_en": "details"})
+            if motivo is not None:
+                anadir_linea_jsonl(ruta_descartados, registro | {"descartado_en": "fichas", "motivo": motivo})
                 descartados.add(appid)
                 break
             anadir_linea_jsonl(rutas[nombre], registro | campos)
@@ -844,7 +951,7 @@ def main() -> None:
             appids = appids[: args.limite]
 
         filtrar_juegos_periodo(appids, dir_captura)
-        descargar_datos_por_juego(leer_appids_jsonl(dir_captura / ARCHIVO_PERIODO), dir_captura)
+        descargar_datos_por_juego(leer_registros_jsonl(dir_captura / ARCHIVO_PERIODO), dir_captura)
     except KeyboardInterrupt:
         log.warning("Descarga interrumpida. Relanza el mismo comando para continuar.")
         raise SystemExit(130)
