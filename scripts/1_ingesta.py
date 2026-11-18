@@ -6,10 +6,13 @@ interrumpe, al relanzarlo continúa donde lo dejó.
 
 Funcionamiento
 --------------
-1. Descarga la lista de juegos de la tienda en games_list.jsonl (solo si no existe).
-2. Recorre la lista juego a juego:
-     appdetails -> si no es un juego lanzado en 2020-2025, se apunta en
-                   games_discarded.jsonl y se pasa al siguiente.
+1. Lista: descarga la lista de juegos de la tienda (solo si no existe).
+2. Filtro de periodo: pide a GetItems la fecha de lanzamiento de la lista en lotes
+   de 100 y se queda con los juegos que pueden ser de 2020-2025. Es permisivo: solo
+   descarta lo seguro (no ha salido o todas sus fechas de Steam están fuera del
+   periodo); ante la duda, el juego pasa y appdetails decide.
+3. Datos por juego: recorre los juegos del filtro uno a uno:
+     appdetails -> si no es un juego lanzado en 2020-2025, se descarta y se pasa al siguiente.
      reviews    -> solo para los juegos que siguen.
      steamspy   -> solo para los juegos que siguen.
    Cada servidor tiene su propio ritmo de peticiones, así que las tres llamadas
@@ -18,13 +21,16 @@ Funcionamiento
 Archivos generados
 ------------------
     games_list.jsonl         Lista de juegos de la tienda (Steam, IStoreService/GetAppList).
+    games_period.jsonl       Juegos que pasan el filtro de periodo (Steam, IStoreBrowseService/GetItems):
+                             name, steam_release_date.
     games_details.jsonl      Ficha (Steam, store/api/appdetails): name, release_date, genres,
-                             categories, is_free, price_initial (céntimos de euro), currency,
-                             supported_languages.
+                             categories, is_free, price_initial (céntimos de euro), discount_percent,
+                             currency, supported_languages.
     games_reviews.jsonl      Reseñas (Steam, IUserReviewsService/GetAppReviews): total_positive,
                              total_negative.
     games_owners_tags.jsonl  Propietarios y tags (SteamSpy, appdetails): owners, tags.
-    games_discarded.jsonl    appid de los juegos que no son del periodo (para no volver a pedirlos).
+    games_discarded.jsonl    Juegos que no son del periodo, con la fase que los descartó
+                             (descartado_en: period o details), para no volver a pedirlos.
 
 Argumentos
 ----------
@@ -62,17 +68,26 @@ from typing import Any
 DIR_RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 URL_LISTA_APPS = "https://api.steampowered.com/IStoreService/GetAppList/v1/"
+URL_ITEMS_TIENDA = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
 USER_AGENT = "steam-games-ingesta/1.0"
 TIMEOUT_S = 30
 MAX_REINTENTOS = 5
 ESPERA_ERROR_S = 60
-LOG_CADA = 50        # juegos entre cada línea de progreso
+LOG_CADA = 50              # juegos entre cada línea de progreso (datos por juego)
+LOG_CADA_LOTES = 20        # lotes entre cada línea de progreso (filtro de periodo)
 ANCHO_CABECERA = 70
 
 ANIO_INICIO = 2020
 ANIO_FIN = 2025
 
+# Filtro de periodo: GetItems admite 100 juegos por petición (con 500 da HTTP 400).
+TAMANO_LOTE_FILTRO = 100
+INTERVALO_FILTRO_S = 1.5
+# Fechas de Steam que se miran en el filtro: si alguna cae en el periodo, el juego pasa.
+CAMPOS_FECHA_STEAM = ("steam_release_date", "original_steam_release_date", "release_from_early_access_date")
+
 ARCHIVO_LISTA_JUEGOS = "games_list.jsonl"
+ARCHIVO_PERIODO = "games_period.jsonl"
 ARCHIVO_DESCARTADOS = "games_discarded.jsonl"
 
 # Llamadas que se hacen una vez por juego, en el orden en que se piden:
@@ -169,8 +184,8 @@ def extraer_campos_appdetails(appid: int, respuesta: Any) -> dict[str, Any] | No
     if lanzamiento.get("coming_soon") or not anio or not ANIO_INICIO <= int(anio.group()) <= ANIO_FIN:
         return None
 
-    # initial = precio sin descuento, en céntimos. No viene si el juego es gratis
-    # o no se vende en la región.
+    # initial = precio sin descuento, en céntimos; discount_percent = rebaja activa el
+    # día de la petición. No vienen si el juego es gratis o no se vende en la región.
     precio = datos.get("price_overview") or {}
     return {
         "name": datos.get("name"),
@@ -179,6 +194,7 @@ def extraer_campos_appdetails(appid: int, respuesta: Any) -> dict[str, Any] | No
         "categories": [categoria["description"] for categoria in datos.get("categories", [])],
         "is_free": datos.get("is_free"),
         "price_initial": precio.get("initial"),
+        "discount_percent": precio.get("discount_percent"),
         "currency": precio.get("currency"),
         # Texto con HTML; los idiomas marcados con * tienen audio completo.
         "supported_languages": datos.get("supported_languages"),
@@ -251,6 +267,153 @@ def extraer_campos(nombre: str, appid: int, respuesta: Any) -> dict[str, Any] | 
     if nombre == "steamspy":
         return extraer_campos_steamspy(respuesta)
     raise ValueError(f"fuente desconocida: {nombre}")
+
+
+# --------------------------------------------------------------------------- #
+# Filtro de periodo: fechas de lanzamiento por lotes con GetItems             #
+# --------------------------------------------------------------------------- #
+
+def construir_params_items_tienda(appids: list[int]) -> dict[str, str]:
+    """
+    Construye los parámetros de la petición a GetItems para un lote de juegos.
+
+    Solo pide el bloque de fechas (include_release); el resto de campos que GetItems
+    devuelve siempre (tipo, nombre...) vienen igualmente.
+
+    Parámetros
+    ----------
+    appids : juegos del lote (como mucho TAMANO_LOTE_FILTRO).
+
+    Devuelve
+    --------
+    Parámetros de la URL.
+    """
+    consulta = {"ids": [{"appid": appid} for appid in appids],
+                "context": {"language": "english", "country_code": "ES"},
+                "data_request": {"include_release": True}}
+    return {"input_json": json.dumps(consulta)}
+
+
+def convertir_timestamp_a_fecha(timestamp: int) -> date:
+    """
+    Convierte una fecha Unix (segundos, UTC) en fecha.
+
+    Parámetros
+    ----------
+    timestamp : segundos desde 1970-01-01 UTC.
+
+    Devuelve
+    --------
+    Fecha correspondiente.
+    """
+    return datetime.fromtimestamp(timestamp, timezone.utc).date()
+
+
+def es_candidato_del_periodo(item: dict[str, Any] | None) -> bool:
+    """
+    Decide si un juego puede ser del periodo según los datos de GetItems.
+
+    Es permisivo: solo descarta lo seguro (otro tipo de producto, juego no lanzado
+    o todas sus fechas de Steam fuera del periodo). Si no hay datos o no hay fechas,
+    lo deja pasar para que appdetails decida.
+
+    Parámetros
+    ----------
+    item : datos del juego en GetItems, o None si no vino en la respuesta.
+
+    Devuelve
+    --------
+    True si el juego pasa el filtro.
+    """
+    if not item or item.get("success") != 1:
+        return True
+    if item.get("type", 0) != 0:  # 0 = juego
+        return False
+    lanzamiento = item.get("release") or {}
+    if lanzamiento.get("is_coming_soon"):
+        return False
+    fechas = [lanzamiento[campo] for campo in CAMPOS_FECHA_STEAM if lanzamiento.get(campo)]
+    if not fechas:
+        return True
+    return any(ANIO_INICIO <= convertir_timestamp_a_fecha(fecha).year <= ANIO_FIN for fecha in fechas)
+
+
+def construir_registro_periodo(appid: int, item: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Construye la línea de ARCHIVO_PERIODO para un juego que pasa el filtro.
+
+    Parámetros
+    ----------
+    appid : identificador del juego en Steam.
+    item  : datos del juego en GetItems, o None si no vino en la respuesta.
+
+    Devuelve
+    --------
+    appid, fecha_peticion, name y steam_release_date (AAAA-MM-DD o None).
+    """
+    item = item or {}
+    timestamp = (item.get("release") or {}).get("steam_release_date")
+    return {"appid": appid,
+            "fecha_peticion": obtener_fecha_peticion(),
+            "name": item.get("name"),
+            "steam_release_date": convertir_timestamp_a_fecha(timestamp).isoformat() if timestamp else None}
+
+
+def filtrar_juegos_periodo(appids: list[int], dir_captura: Path) -> None:
+    """
+    Pasa la lista de juegos por el filtro de periodo, en lotes de TAMANO_LOTE_FILTRO.
+
+    Los que pasan van a ARCHIVO_PERIODO y el resto a ARCHIVO_DESCARTADOS con
+    descartado_en = "period". Se salta lo ya filtrado en una ejecución anterior. Si un
+    lote falla, no se guarda y se reintenta al relanzar.
+
+    Parámetros
+    ----------
+    appids      : juegos de la lista, en orden.
+    dir_captura : carpeta de la captura (data/raw/<fecha>).
+    """
+    ruta_periodo = dir_captura / ARCHIVO_PERIODO
+    ruta_descartados = dir_captura / ARCHIVO_DESCARTADOS
+    en_periodo = set(leer_appids_jsonl(ruta_periodo))
+    descartados = set(leer_appids_jsonl(ruta_descartados))
+    pendientes = [appid for appid in appids if appid not in en_periodo and appid not in descartados]
+    lotes = [pendientes[i:i + TAMANO_LOTE_FILTRO] for i in range(0, len(pendientes), TAMANO_LOTE_FILTRO)]
+
+    mostrar_cabecera(f"FILTRO DE PERIODO ({ARCHIVO_PERIODO})")
+    log.info("Ya filtrado: %s del periodo, %s descartados.",
+             formatear_numero(len(en_periodo)), formatear_numero(len(descartados)))
+    log.info("Pendientes: %s juegos en %s lotes de %d. Progreso cada %d lotes.",
+             formatear_numero(len(pendientes)), formatear_numero(len(lotes)), TAMANO_LOTE_FILTRO, LOG_CADA_LOTES)
+
+    inicio = time.monotonic()
+    juegos_recorridos = 0
+    for numero_lote, lote in enumerate(lotes, start=1):
+        try:
+            respuesta = pedir_json_con_reintentos(URL_ITEMS_TIENDA, construir_params_items_tienda(lote))
+            items = {item.get("appid"): item for item in respuesta["response"].get("store_items", [])}
+        except (urllib.error.HTTPError, RuntimeError, KeyError, TypeError) as error:
+            log.error("filtro: lote %d no descargado (%s: %s).", numero_lote, type(error).__name__, error)
+        else:
+            for appid in lote:
+                item = items.get(appid)
+                if es_candidato_del_periodo(item):
+                    anadir_linea_jsonl(ruta_periodo, construir_registro_periodo(appid, item))
+                    en_periodo.add(appid)
+                else:
+                    anadir_linea_jsonl(ruta_descartados, {"appid": appid,
+                                                          "fecha_peticion": obtener_fecha_peticion(),
+                                                          "descartado_en": "period"})
+                    descartados.add(appid)
+
+        juegos_recorridos += len(lote)
+        if numero_lote % LOG_CADA_LOTES == 0 or numero_lote == len(lotes):
+            mostrar_progreso(juegos_recorridos, len(pendientes), inicio,
+                             {obtener_etiqueta_archivo(ARCHIVO_PERIODO): len(en_periodo),
+                              obtener_etiqueta_archivo(ARCHIVO_DESCARTADOS): len(descartados)})
+        time.sleep(INTERVALO_FILTRO_S)
+
+    log.info("Resultado: %s juegos del periodo, %s descartados.",
+             formatear_numero(len(en_periodo)), formatear_numero(len(descartados)))
 
 
 # --------------------------------------------------------------------------- #
@@ -378,6 +541,17 @@ def anadir_linea_jsonl(ruta: Path, registro: dict[str, Any]) -> None:
         archivo.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
 
+def obtener_fecha_peticion() -> str:
+    """
+    Devuelve el momento actual en UTC para el campo fecha_peticion.
+
+    Devuelve
+    --------
+    Fecha y hora ISO 8601 al segundo (p. ej. 2026-11-18T14:23:22+00:00).
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 # --------------------------------------------------------------------------- #
 # Consola: formato de números y mensajes de progreso                          #
 # --------------------------------------------------------------------------- #
@@ -397,19 +571,20 @@ def formatear_numero(numero: int) -> str:
     return f"{numero:,}".replace(",", ".")
 
 
-def formatear_decimal(numero: float) -> str:
+def formatear_decimal(numero: float, decimales: int = 1) -> str:
     """
-    Formatea un decimal con un dígito y coma como separador (1,5).
+    Formatea un decimal con coma como separador (1,5).
 
     Parámetros
     ----------
-    numero : decimal a formatear.
+    numero    : decimal a formatear.
+    decimales : dígitos tras la coma.
 
     Devuelve
     --------
     Número como texto.
     """
-    return f"{numero:.1f}".replace(".", ",")
+    return f"{numero:.{decimales}f}".replace(".", ",")
 
 
 def formatear_duracion(segundos: float) -> str:
@@ -458,7 +633,7 @@ def mostrar_cabecera(titulo: str) -> None:
 
 def mostrar_estado_archivos(hechos: dict[str, set[int]], descartados: set[int]) -> None:
     """
-    Escribe en el log cuántos juegos tiene cada archivo de la captura.
+    Escribe en el log cuántos juegos tiene cada archivo de datos por juego.
 
     Parámetros
     ----------
@@ -470,29 +645,43 @@ def mostrar_estado_archivos(hechos: dict[str, set[int]], descartados: set[int]) 
     log.info("  %-24s %10s juegos", ARCHIVO_DESCARTADOS, formatear_numero(len(descartados)))
 
 
-def mostrar_progreso(numero: int, total: int, inicio: float,
-                     hechos: dict[str, set[int]], descartados: set[int]) -> None:
+def contar_por_archivo(hechos: dict[str, set[int]], descartados: set[int]) -> dict[str, int]:
     """
-    Escribe en el log una línea de progreso con el total de cada archivo, el ritmo
-    y el tiempo estimado que falta.
+    Cuenta los juegos de cada archivo de datos por juego, para la línea de progreso.
 
     Parámetros
     ----------
-    numero      : juegos recorridos en esta ejecución.
-    total       : juegos pendientes al empezar esta ejecución.
-    inicio      : momento (time.monotonic) en que empezó el recorrido.
     hechos      : appids guardados por cada fuente.
     descartados : appids descartados.
+
+    Devuelve
+    --------
+    Número de juegos por etiqueta de archivo (details, reviews, owners_tags, discarded).
+    """
+    contadores = {obtener_etiqueta_archivo(fuente["archivo"]): len(hechos[nombre])
+                  for nombre, fuente in FUENTES.items()}
+    contadores[obtener_etiqueta_archivo(ARCHIVO_DESCARTADOS)] = len(descartados)
+    return contadores
+
+
+def mostrar_progreso(numero: int, total: int, inicio: float, contadores: dict[str, int]) -> None:
+    """
+    Escribe en el log una línea de progreso con los contadores, el ritmo y el tiempo
+    estimado que falta.
+
+    Parámetros
+    ----------
+    numero     : juegos recorridos en esta ejecución.
+    total      : juegos pendientes al empezar esta ejecución.
+    inicio     : momento (time.monotonic) en que empezó el recorrido.
+    contadores : número de juegos por archivo (etiqueta -> total).
     """
     segundos_por_juego = (time.monotonic() - inicio) / numero
-    contadores = " · ".join(
-        f"{obtener_etiqueta_archivo(fuente['archivo'])} {formatear_numero(len(hechos[nombre]))}"
-        for nombre, fuente in FUENTES.items()
-    )
-    log.info("[%s/%s · %s %%]  %s · %s %s  |  %s s/juego  |  quedan ~%s",
+    texto_contadores = " · ".join(f"{etiqueta} {formatear_numero(cantidad)}"
+                                  for etiqueta, cantidad in contadores.items())
+    log.info("[%s/%s · %s %%]  %s  |  %s s/juego  |  quedan ~%s",
              formatear_numero(numero), formatear_numero(total), formatear_decimal(100 * numero / total),
-             contadores, obtener_etiqueta_archivo(ARCHIVO_DESCARTADOS),
-             formatear_numero(len(descartados)), formatear_decimal(segundos_por_juego),
+             texto_contadores, formatear_decimal(segundos_por_juego, 2),
              formatear_duracion(segundos_por_juego * (total - numero)))
 
 
@@ -540,7 +729,7 @@ def descargar_datos_por_juego(appids: list[int], dir_captura: Path) -> None:
 
     Parámetros
     ----------
-    appids      : juegos a recorrer, en orden.
+    appids      : juegos a recorrer (los del filtro de periodo), en orden.
     dir_captura : carpeta de la captura (data/raw/<fecha>).
     """
     rutas = {nombre: dir_captura / fuente["archivo"] for nombre, fuente in FUENTES.items()}
@@ -591,17 +780,16 @@ def recorrer_juegos_pendientes(pendientes: list[int], rutas: dict[str, Path],
                 log.error("%s: appid %d no descargado (%s: %s).", nombre, appid, type(error).__name__, error)
                 break
 
-            registro = {"appid": appid,
-                        "fecha_peticion": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            registro = {"appid": appid, "fecha_peticion": obtener_fecha_peticion()}
             if campos is None:
-                anadir_linea_jsonl(ruta_descartados, registro)
+                anadir_linea_jsonl(ruta_descartados, registro | {"descartado_en": "details"})
                 descartados.add(appid)
                 break
             anadir_linea_jsonl(rutas[nombre], registro | campos)
             hechos[nombre].add(appid)
 
         if numero % LOG_CADA == 0 or numero == len(pendientes):
-            mostrar_progreso(numero, len(pendientes), inicio, hechos, descartados)
+            mostrar_progreso(numero, len(pendientes), inicio, contar_por_archivo(hechos, descartados))
 
 
 # --------------------------------------------------------------------------- #
@@ -630,7 +818,7 @@ def parsear_argumentos() -> argparse.Namespace:
 # =========================================================================== #
 
 def main() -> None:
-    """Descarga la lista de juegos si falta y después los datos de cada juego."""
+    """Descarga la lista de juegos si falta, la filtra por periodo y pide los datos de cada juego."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s",
                         datefmt="%d/%m %H:%M:%S")
     args = parsear_argumentos()
@@ -654,7 +842,9 @@ def main() -> None:
         log.info("%s juegos en la lista.", formatear_numero(len(appids)))
         if args.limite:
             appids = appids[: args.limite]
-        descargar_datos_por_juego(appids, dir_captura)
+
+        filtrar_juegos_periodo(appids, dir_captura)
+        descargar_datos_por_juego(leer_appids_jsonl(dir_captura / ARCHIVO_PERIODO), dir_captura)
     except KeyboardInterrupt:
         log.warning("Descarga interrumpida. Relanza el mismo comando para continuar.")
         raise SystemExit(130)
