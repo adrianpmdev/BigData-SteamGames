@@ -42,3 +42,33 @@
 | Unificar valores | `generos`, `categorias`, `etiquetas`, `idiomas` | Valores sin espacios sobrantes y con el mismo formato | Evitar que el mismo valor cuente como dos distintos. |
 | Completar el precio | `precio_base_centimos`, `es_gratis` | `precio_base_centimos` = 0 en juegos gratis | Los juegos gratis no traen precio; así todos los juegos tienen un valor comparable y el precio 0 identifica a los gratuitos. |
 | Tratar valores ausentes | Listas vacías (`generos`, `categorias`, `etiquetas`, `idiomas`) | Valores nulos | Distinguir "sin dato" de un valor real. |
+
+## 2. Diagnosticar
+
+Código: `scripts/2_diagnostico.py` (solo lee la captura de `data/raw/2026-11-18/`; no modifica nada).
+
+### Comprobaciones
+
+| Comprobación | Resultado | Conclusión |
+|---|---|---|
+| Filas y columnas de cada archivo | | |
+| Tipos de datos | | |
+| Valores ausentes (nulos, listas vacías y textos vacíos) | | |
+| Filas repetidas | | |
+| `appid` repetido (clave candidata) | | |
+| Cuadre entre archivos (lista, periodo, fichas y descartados) | | |
+| Géneros, categorías y etiquetas distintos y variantes de un mismo valor | | |
+| Moneda | | |
+| Precio y `es_gratis` coherentes | | |
+| Reseñas fuera de rango y juegos con 0 reseñas | | |
+| Fechas no convertibles y fecha original posterior a la de la tienda | | |
+| Cobertura temporal (juegos por año, por mes en 2020 y fechas de petición) | | |
+| Juegos fuera del periodo exacto | | |
+
+### Problemas y dudas detectados
+
+| Problema | Cifra | Tipo |
+|---|---|---|
+| | | Error confirmado |
+| | | Error confirmado |
+| | | Necesita investigación |
