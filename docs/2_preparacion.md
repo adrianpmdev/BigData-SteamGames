@@ -6,6 +6,7 @@
 
 | Concepto | Nuestro proyecto |
 |---|---|
+| **Pregunta** | Si fuera un estudio de videojuegos, ¿qué género y qué categoría de juego debería desarrollar?<br>1. ¿Qué géneros y categorías tienen mejor relación entre éxito (reseñas, % positivo) y competencia (número de juegos)?<br>2. ¿Cómo ha evolucionado la oferta de cada género entre 2020 y 2025, incluido el efecto del boom de la COVID en 2020?<br>3. ¿Qué precio da mejores resultados en cada género?<br>4. ¿Influyen el multijugador, el cooperativo o el número de idiomas en el éxito de un juego? |
 | **Unidad de observación** | Una fila por juego de Steam. |
 | **Clave candidata** | `appid`: identifica un juego dentro de Steam y no se repite en ningún archivo de la captura. |
 | **Esquema de salida** | Tabla `juegos` (detallada en la tabla siguiente). |
