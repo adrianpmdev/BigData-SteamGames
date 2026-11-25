@@ -1,7 +1,7 @@
 """
 Transforma la captura RAW de data/raw/<fecha>/ en las tablas preparadas del diseño de
-docs/2_preparacion.md y las guarda en data/processed/<fecha>/. Trabaja sobre una copia
-en memoria: no modifica los archivos originales.
+docs/2_preparacion.md y las guarda en data/processed/<fecha>/. Se detiene si a la captura
+le falta alguna columna de las reglas o si alguna fecha no se puede convertir.
 
 Reglas (en orden, un juego excluido cuenta solo en la primera regla que cumple)
 ------
@@ -19,12 +19,13 @@ Todas las tablas se ordenan por la fecha del juego (y appid).
 
 Archivos generados (data/processed/<fecha>/)
 ------------------
-    juegos.csv       Un juego por fila (clave appid), con captura_origen.
-    generos.csv      Un género de un juego por fila (clave appid + genero).
-    categorias.csv   Una categoría de un juego por fila (clave appid + categoria).
-    etiquetas.csv    Una etiqueta de un juego por fila (clave appid + etiqueta).
-    idiomas.csv      Un idioma de un juego por fila, con audio (clave appid + idioma).
-    excluidos.csv    Juegos excluidos, con motivo, detalle de la regla y captura_origen.
+    juegos.parquet       Un juego por fila (clave appid), con captura_origen.
+    generos.parquet      Un género de un juego por fila (clave appid + genero).
+    categorias.parquet   Una categoría de un juego por fila (clave appid + categoria).
+    etiquetas.parquet    Una etiqueta de un juego por fila (clave appid + etiqueta).
+    idiomas.parquet      Un idioma de un juego por fila, con audio (clave appid + idioma).
+    excluidos.parquet    Juegos excluidos, con motivo, detalle de la regla y captura_origen.
+Después de guardarlas, se vuelven a leer y se comprueba que conservan contenido y tipos.
 
 Argumentos
 ----------
@@ -59,6 +60,10 @@ FIN_PERIODO = pd.Timestamp("2025-12-31")
 FORMATOS_FECHA_TIENDA = ("%d %b, %Y", "%b %d, %Y")
 COLUMNAS_FECHA_STEAM = ("fecha_lanzamiento_steam", "fecha_lanzamiento_original",
                         "fecha_salida_acceso_anticipado")
+# Columnas de juegos_fichas.jsonl que usan las reglas.
+COLUMNAS_NECESARIAS = ("appid", "nombre", "fecha_lanzamiento", *COLUMNAS_FECHA_STEAM, "generos",
+                       "categorias", "etiquetas", "es_gratis", "precio_base_centimos", "moneda",
+                       "idiomas", "resenas_positivas", "resenas_negativas")
 
 # Fichas de tipo juego que no son juegos. "Editor", "Server" o "Launcher" no se usan:
 # dan falsos positivos con juegos reales (Server is Down, Video Editor Tycoon...).
@@ -85,7 +90,8 @@ COLUMNAS_JUEGOS = ["appid", "nombre", "fecha_lanzamiento", "resenas_positivas", 
 # Tabla hija -> columna del valor (junto con appid forma su clave).
 CLAVES_TABLAS_HIJAS = {"generos": "genero", "categorias": "categoria", "etiquetas": "etiqueta",
                        "idiomas": "idioma"}
-FORMATO_FECHA_SALIDA = "%d/%m/%Y"   # solo para mostrar, los CSV guardan AAAA-MM-DD
+FORMATO_FECHA_SALIDA = "%d/%m/%Y"   # solo para mostrar por pantalla
+EXTENSION_TABLAS = ".parquet"
 ANCHO_TITULO = 70
 
 
@@ -165,6 +171,11 @@ def asignar_fecha(fichas: pd.DataFrame) -> pd.Series:
     Devuelve
     --------
     Fecha asignada (NaT si ninguna cae en el periodo).
+
+    Lanza
+    -----
+    ValueError si alguna fecha con texto no se puede convertir (formato desconocido):
+    sin este control, esos juegos se excluirían como fuera_periodo sin serlo.
     """
     fecha_tienda = pd.Series(pd.NaT, index=fichas.index)
     for formato in FORMATOS_FECHA_TIENDA:
@@ -172,6 +183,11 @@ def asignar_fecha(fichas: pd.DataFrame) -> pd.Series:
                                                           errors="coerce"))
     fechas = pd.concat([fecha_tienda] + [pd.to_datetime(fichas[columna], errors="coerce")
                                          for columna in COLUMNAS_FECHA_STEAM], axis=1)
+    fechas.columns = ["fecha_lanzamiento", *COLUMNAS_FECHA_STEAM]
+    con_texto = fichas[list(fechas.columns)].apply(lambda columna: columna.fillna("").astype(str).str.strip().ne(""))
+    sin_convertir = (con_texto & fechas.isna()).sum()
+    if sin_convertir.any():
+        raise ValueError(f"Fechas que no se pueden convertir: {sin_convertir[sin_convertir > 0].to_dict()}.")
     return fechas.where(fechas.apply(lambda fecha: fecha.between(INICIO_PERIODO, FIN_PERIODO))).min(axis=1)
 
 
@@ -274,7 +290,7 @@ def construir_juegos(juegos: pd.DataFrame, captura_origen: str) -> pd.DataFrame:
     Tabla juegos, ordenada por fecha y appid.
     """
     return juegos.assign(
-        fecha_lanzamiento=juegos["fecha_asignada"].dt.date,
+        fecha_lanzamiento=juegos["fecha_asignada"].astype("datetime64[ms]"),
         precio_base_centimos=corregir_precio(juegos),
         captura_origen=captura_origen,
     )[COLUMNAS_JUEGOS].sort_values(["fecha_lanzamiento", "appid"])
@@ -336,30 +352,30 @@ def ordenar_como_juegos(tabla: pd.DataFrame, juegos: pd.DataFrame, nombre_valor:
         ["posicion", nombre_valor]).drop(columns="posicion")
 
 
-def comprobar_tablas(tablas: dict[str, pd.DataFrame], total_fichas: int, excluidos: int) -> None:
+def guardar_tablas(tablas: dict[str, pd.DataFrame], dir_salida: Path) -> None:
     """
-    Comprueba las claves de cada tabla y que los recuentos cuadren.
+    Guarda cada tabla en Parquet, la vuelve a leer y comprueba que no ha cambiado.
+
+    Los textos se guardan con el tipo str de pandas para que la tabla leída sea idéntica
+    a la guardada.
 
     Parámetros
     ----------
-    tablas       : tablas de salida por nombre (juegos y las de CLAVES_TABLAS_HIJAS).
-    total_fichas : registros de ARCHIVO_FICHAS.
-    excluidos    : juegos excluidos.
+    tablas     : tablas de salida por nombre.
+    dir_salida : carpeta de la captura en data/processed/.
 
     Lanza
     -----
-    ValueError si una clave se repite, una fila no tiene juego o los recuentos no cuadran.
+    AssertionError si una tabla leída no coincide en contenido o tipos con la guardada.
     """
-    juegos = tablas["juegos"]
-    if juegos["appid"].duplicated().any():
-        raise ValueError("appid repetido en juegos.")
-    if len(juegos) + excluidos != total_fichas:
-        raise ValueError("Preparados + excluidos no suman los registros originales.")
-    for nombre, nombre_valor in CLAVES_TABLAS_HIJAS.items():
-        if tablas[nombre].duplicated(["appid", nombre_valor]).any():
-            raise ValueError(f"(appid, {nombre_valor}) repetido en {nombre}.")
-        if not tablas[nombre]["appid"].isin(juegos["appid"]).all():
-            raise ValueError(f"{nombre} tiene appid que no están en juegos.")
+    dir_salida.mkdir(parents=True, exist_ok=True)
+    for nombre, tabla in tablas.items():
+        tabla = tabla.reset_index(drop=True)
+        textos = tabla.select_dtypes(include=["object", "str"]).columns
+        tabla[textos] = tabla[textos].astype("str")
+        ruta = dir_salida / f"{nombre}{EXTENSION_TABLAS}"
+        tabla.to_parquet(ruta, index=False)
+        pd.testing.assert_frame_equal(pd.read_parquet(ruta), tabla, obj=nombre)
 
 
 # --------------------------------------------------------------------------- #
@@ -417,15 +433,18 @@ def parsear_argumentos() -> argparse.Namespace:
 # =========================================================================== #
 
 def main() -> None:
-    """Aplica las reglas, construye las tablas, las comprueba y las guarda con un resumen."""
+    """Aplica las reglas, construye las tablas y las guarda con un resumen."""
     args = parsear_argumentos()
     dir_captura = DIR_RAW / args.fecha
     if not (dir_captura / ARCHIVO_FICHAS).is_file():
         raise SystemExit(f"No existe {dir_captura / ARCHIVO_FICHAS}.")
     captura_origen = dir_captura.relative_to(RAIZ).as_posix()
 
-    # Lectura de la captura RAW.
+    # Lectura de la captura RAW y comprobación de que trae las columnas que usan las reglas.
     fichas = leer_jsonl(dir_captura / ARCHIVO_FICHAS)
+    faltan = [columna for columna in COLUMNAS_NECESARIAS if columna not in fichas.columns]
+    if faltan:
+        raise SystemExit(f"A {ARCHIVO_FICHAS} le faltan columnas: {', '.join(faltan)}.")
 
     # Reglas 1-4: fecha asignada y exclusiones con su motivo.
     fichas = fichas.assign(fecha_asignada=asignar_fecha(fichas))
@@ -444,16 +463,13 @@ def main() -> None:
     for nombre, nombre_valor in CLAVES_TABLAS_HIJAS.items():
         tablas[nombre] = ordenar_como_juegos(tablas[nombre], juegos, nombre_valor)
 
-    # Comprobación de claves y recuentos, y tabla de excluidos con su procedencia.
-    comprobar_tablas(tablas, len(fichas), len(excluidos))
+    # Tabla de excluidos con su motivo y procedencia.
     tablas["excluidos"] = excluidos.assign(captura_origen=captura_origen)[
         ["appid", "nombre", "motivo", "detalle", "captura_origen"]].sort_values("appid")
 
-    # Guardado de las tablas en data/processed/<fecha>/.
+    # Guardado en Parquet y relectura para comprobar contenido y tipos.
     dir_salida = DIR_PROCESSED / args.fecha
-    dir_salida.mkdir(parents=True, exist_ok=True)
-    for nombre, tabla in tablas.items():
-        tabla.to_csv(dir_salida / f"{nombre}.csv", index=False, encoding="utf-8")
+    guardar_tablas(tablas, dir_salida)
 
     # Resumen: recuentos, nulos y filas por tabla.
     mostrar_titulo(f"RECUENTOS ({captura_origen} -> {dir_salida.relative_to(RAIZ).as_posix()})")
@@ -469,7 +485,7 @@ def main() -> None:
     for nombre, tabla in tablas.items():
         por_juego = (f"  ({len(tabla) / len(juegos):.1f} por juego)".replace(".", ",")
                      if nombre in CLAVES_TABLAS_HIJAS else "")
-        print(f"    {nombre + '.csv':16} {formatear_numero(len(tabla)):>10}{por_juego}")
+        print(f"    {nombre + EXTENSION_TABLAS:20} {formatear_numero(len(tabla)):>10}{por_juego}")
 
     # Revisión: valores de dos juegos antes y después de transformar.
     mostrar_titulo("ANTES Y DESPUÉS")
