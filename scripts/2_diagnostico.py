@@ -84,7 +84,7 @@ def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
 
     Antes de interpretar cada línea se quitan los bytes nulos y los espacios de los
     extremos (una escritura interrumpida puede dejar bytes nulos delante de un registro
-    válido); las líneas que quedan vacías se saltan y las que no son un objeto JSON se
+    válido). Las líneas que quedan vacías se saltan y las que no son un objeto JSON se
     cuentan como no válidas. No se usa pd.read_json(lines=True) porque falla entero con
     una sola línea dañada.
 
