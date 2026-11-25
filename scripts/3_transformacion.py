@@ -15,16 +15,20 @@ Reglas (en orden, un juego excluido cuenta solo en la primera regla que cumple)
 7. Fechas: se convierten y se asigna la primera dentro del periodo.
 8. Idiomas: una fila por idioma, con si tiene audio (*). Sin filas si declara 100 o más.
 9. Géneros, categorías y etiquetas: una fila por valor en su tabla.
-Todas las tablas se ordenan por la fecha del juego (y appid).
+10. Nombre con espacios al principio o al final              -> quitar esos espacios.
+Juegos y sus tablas hijas se ordenan por la fecha del juego (y appid). Excluidos, por appid.
 
 Archivos generados (data/processed/<fecha>/)
 ------------------
-    juegos.parquet       Un juego por fila (clave appid), con captura_origen.
+    juegos.parquet       Un juego por fila (clave appid), con archivo_origen y registro_origen.
     generos.parquet      Un género de un juego por fila (clave appid + genero).
     categorias.parquet   Una categoría de un juego por fila (clave appid + categoria).
     etiquetas.parquet    Una etiqueta de un juego por fila (clave appid + etiqueta).
     idiomas.parquet      Un idioma de un juego por fila, con audio (clave appid + idioma).
-    excluidos.parquet    Juegos excluidos, con motivo, detalle de la regla y captura_origen.
+    excluidos.parquet    Juegos excluidos, con motivo, detalle de la regla, archivo_origen y
+                         registro_origen.
+Procedencia: archivo_origen es la ruta del archivo RAW y registro_origen la línea del juego en
+ese archivo, contada desde 0.
 Después de guardarlas, se vuelven a leer y se comprueba que conservan contenido y tipos.
 
 Argumentos
@@ -34,6 +38,8 @@ Argumentos
 Uso
 ---
     python scripts/3_transformacion.py --fecha 2026-11-18
+
+@author adrianpmdev
 """
 from __future__ import annotations
 
@@ -86,7 +92,8 @@ TABLAS_LISTA = {"generos": ("generos", "genero"),
                 "categorias": ("categorias", "categoria"),
                 "etiquetas": ("etiquetas", "etiqueta")}
 COLUMNAS_JUEGOS = ["appid", "nombre", "fecha_lanzamiento", "resenas_positivas", "resenas_negativas",
-                   "precio_base_centimos", "captura_origen"]
+                   "precio_base_centimos", "archivo_origen", "registro_origen"]
+COLUMNAS_EXCLUIDOS = ["appid", "nombre", "motivo", "detalle", "archivo_origen", "registro_origen"]
 # Tabla hija -> columna del valor (junto con appid forma su clave).
 CLAVES_TABLAS_HIJAS = {"generos": "genero", "categorias": "categoria", "etiquetas": "etiqueta",
                        "idiomas": "idioma"}
@@ -103,12 +110,13 @@ ANCHO_TITULO = 70
 # Lectura y consola                                                           #
 # --------------------------------------------------------------------------- #
 
-def leer_jsonl(ruta: Path) -> pd.DataFrame:
+def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
     """
-    Lee un archivo JSONL en un DataFrame, tolerando las líneas dañadas.
+    Lee un archivo JSONL en un DataFrame, con la línea de cada registro y tolerando las
+    líneas dañadas.
 
     Se quitan los bytes nulos y espacios de cada línea (una escritura interrumpida puede
-    dejarlos). Las líneas vacías o que no son un objeto JSON se ignoran.
+    dejarlos). Las líneas vacías o que no son un objeto JSON se apartan y se cuentan.
 
     Parámetros
     ----------
@@ -116,18 +124,21 @@ def leer_jsonl(ruta: Path) -> pd.DataFrame:
 
     Devuelve
     --------
-    Un registro por línea válida.
+    Un registro por línea válida, con registro_origen (línea del archivo contada desde 0),
+    y el número de líneas apartadas.
     """
-    registros = []
+    registros, apartadas = [], 0
     with ruta.open(encoding="utf-8") as archivo:
-        for linea in archivo:
+        for numero_linea, linea in enumerate(archivo):
             try:
                 registro = json.loads(linea.strip("\x00 \t\r\n"))
             except ValueError:
-                continue
+                registro = None
             if isinstance(registro, dict):
-                registros.append(registro)
-    return pd.DataFrame.from_records(registros)
+                registros.append({**registro, "registro_origen": numero_linea})
+            else:
+                apartadas += 1
+    return pd.DataFrame.from_records(registros), apartadas
 
 
 def mostrar_titulo(titulo: str) -> None:
@@ -276,14 +287,14 @@ def separar_idiomas(texto: object) -> list[tuple[str, bool]]:
 # Tablas de salida                                                            #
 # --------------------------------------------------------------------------- #
 
-def construir_juegos(juegos: pd.DataFrame, captura_origen: str) -> pd.DataFrame:
+def construir_juegos(juegos: pd.DataFrame, archivo_origen: str) -> pd.DataFrame:
     """
     Construye la tabla juegos con las columnas y tipos del diseño.
 
     Parámetros
     ----------
-    juegos         : juegos no excluidos, con fecha_asignada.
-    captura_origen : ruta relativa de la captura RAW.
+    juegos         : juegos no excluidos, con fecha_asignada y registro_origen.
+    archivo_origen : ruta relativa del archivo RAW.
 
     Devuelve
     --------
@@ -292,7 +303,7 @@ def construir_juegos(juegos: pd.DataFrame, captura_origen: str) -> pd.DataFrame:
     return juegos.assign(
         fecha_lanzamiento=juegos["fecha_asignada"].astype("datetime64[ms]"),
         precio_base_centimos=corregir_precio(juegos),
-        captura_origen=captura_origen,
+        archivo_origen=archivo_origen,
     )[COLUMNAS_JUEGOS].sort_values(["fecha_lanzamiento", "appid"])
 
 
@@ -438,13 +449,16 @@ def main() -> None:
     dir_captura = DIR_RAW / args.fecha
     if not (dir_captura / ARCHIVO_FICHAS).is_file():
         raise SystemExit(f"No existe {dir_captura / ARCHIVO_FICHAS}.")
-    captura_origen = dir_captura.relative_to(RAIZ).as_posix()
+    archivo_origen = (dir_captura / ARCHIVO_FICHAS).relative_to(RAIZ).as_posix()
 
-    # Lectura de la captura RAW y comprobación de que trae las columnas que usan las reglas.
-    fichas = leer_jsonl(dir_captura / ARCHIVO_FICHAS)
+    # Lectura de la captura RAW, con la línea de cada registro, y comprobación de columnas.
+    fichas, lineas_apartadas = leer_jsonl(dir_captura / ARCHIVO_FICHAS)
     faltan = [columna for columna in COLUMNAS_NECESARIAS if columna not in fichas.columns]
     if faltan:
         raise SystemExit(f"A {ARCHIVO_FICHAS} le faltan columnas: {', '.join(faltan)}.")
+
+    # Regla 10: nombre sin espacios al principio ni al final (no cambia las reglas por nombre).
+    fichas["nombre"] = fichas["nombre"].str.strip()
 
     # Reglas 1-4: fecha asignada y exclusiones con su motivo.
     fichas = fichas.assign(fecha_asignada=asignar_fecha(fichas))
@@ -453,7 +467,7 @@ def main() -> None:
     preparados = fichas[fichas["motivo"].isna()]
 
     # Reglas 5-9: tabla juegos (precio y fecha) y tablas hijas (listas e idiomas).
-    juegos = construir_juegos(preparados, captura_origen)
+    juegos = construir_juegos(preparados, archivo_origen)
     tablas = {"juegos": juegos}
     for nombre, (columna, nombre_valor) in TABLAS_LISTA.items():
         tablas[nombre] = desplegar_lista(preparados, columna, nombre_valor)
@@ -464,15 +478,15 @@ def main() -> None:
         tablas[nombre] = ordenar_como_juegos(tablas[nombre], juegos, nombre_valor)
 
     # Tabla de excluidos con su motivo y procedencia.
-    tablas["excluidos"] = excluidos.assign(captura_origen=captura_origen)[
-        ["appid", "nombre", "motivo", "detalle", "captura_origen"]].sort_values("appid")
+    tablas["excluidos"] = excluidos.assign(archivo_origen=archivo_origen)[COLUMNAS_EXCLUIDOS].sort_values("appid")
 
     # Guardado en Parquet y relectura para comprobar contenido y tipos.
     dir_salida = DIR_PROCESSED / args.fecha
     guardar_tablas(tablas, dir_salida)
 
     # Resumen: recuentos, nulos y filas por tabla.
-    mostrar_titulo(f"RECUENTOS ({captura_origen} -> {dir_salida.relative_to(RAIZ).as_posix()})")
+    mostrar_titulo(f"RECUENTOS ({archivo_origen} -> {dir_salida.relative_to(RAIZ).as_posix()})")
+    print(f"  Líneas dañadas        {formatear_numero(lineas_apartadas):>9}")
     print(f"  Registros originales  {formatear_numero(len(fichas)):>9}")
     print(f"  Preparados            {formatear_numero(len(preparados)):>9}")
     print(f"  Excluidos             {formatear_numero(len(excluidos)):>9}")
