@@ -19,6 +19,8 @@ Notas
   precompilada para tu versión de Python (p. ej. pyyaml en versiones muy nuevas) y
   pip intenta compilarla, se reintenta con --only-binary :all:, que elige versiones
   ya compiladas y no necesita Microsoft C++ Build Tools.
+
+@author adrianpmdev
 """
 from __future__ import annotations
 
