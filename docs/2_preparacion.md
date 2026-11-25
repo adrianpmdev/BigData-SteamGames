@@ -3,10 +3,13 @@
 1. [Entender (Tarea 3.1)](#1-entender-tarea-31)
 2. [Diagnosticar (Tarea 3.2)](#2-diagnosticar-tarea-32)
 3. [Transformar (Tarea 3.3)](#3-transformar-tarea-33)
+4. [Validar y guardar (Tarea 3.4)](#4-validar-y-guardar-tarea-34)
 
 <br><br>
 
 ## 1. Entender (Tarea 3.1)
+
+Qué datos hacen falta para responder las preguntas y cómo serán las tablas preparadas.
 
 ### Decisiones
 
@@ -55,7 +58,7 @@ Un juego sin géneros, categorías, etiquetas o idiomas no tiene filas en la tab
 | Seleccionar columnas | `nombre`, fechas, `generos`, `categorias`, `etiquetas`, `resenas_positivas`, `resenas_negativas`, `precio_base_centimos`, `es_gratis`, `moneda`, `idiomas` de `juegos_fichas` | Solo las columnas de las tablas de salida | Quedarse solo con lo necesario para las preguntas. |
 | Convertir texto a fecha | `fecha_lanzamiento` (`"9 Sep, 2026"`), `fecha_lanzamiento_steam`, `fecha_lanzamiento_original`, `fecha_salida_acceso_anticipado` (`"2021-02-02"`) | Fechas | Poder comparar y agrupar por fecha. |
 | Elegir fecha y filtrar periodo | `fecha_lanzamiento`, `fecha_lanzamiento_steam`, `fecha_lanzamiento_original`, `fecha_salida_acceso_anticipado` | `fecha_lanzamiento` (la primera que cae en 2020–2025). Se quitan los juegos sin ninguna fecha en el periodo | La captura deja un día de margen en cada extremo. Aquí se aplica el periodo exacto con las mismas cuatro fechas que usa la ingesta. |
-| Separar listas en tablas | `generos`, `categorias`, `etiquetas` (listas) | Tablas `generos`, `categorias` y `etiquetas`, con una fila por valor | Agrupar por género o categoría sin desagregar las listas en cada análisis. Además, una lista no se guarda bien en CSV. |
+| Separar listas en tablas | `generos`, `categorias`, `etiquetas` (listas) | Tablas `generos`, `categorias` y `etiquetas`, con una fila por valor | Agrupar por género o categoría sin desagregar las listas en cada análisis. Además, cada fila tiene una clave clara. |
 | Separar idiomas | `idiomas` (texto con HTML: `English<strong>*</strong>, French`) | Tabla `idiomas`, con una fila por idioma y si tiene audio | La pregunta 4 necesita cuántos idiomas tiene cada juego y cuáles son los más frecuentes. Los marcados con `*` tienen audio completo. |
 | Unificar valores | `generos`, `categorias`, `etiquetas`, `idiomas` | Valores sin espacios sobrantes y con el mismo formato | Evitar que el mismo valor cuente como dos distintos. |
 | Completar el precio | `precio_base_centimos`, `es_gratis` | `precio_base_centimos` = 0 en juegos gratis | Los juegos gratis no traen precio. Con 0 tienen un valor comparable y se identifican fácilmente. |
@@ -64,6 +67,8 @@ Un juego sin géneros, categorías, etiquetas o idiomas no tiene filas en la tab
 <br><br>
 
 ## 2. Diagnosticar (Tarea 3.2)
+
+Revisión de la captura original para encontrar problemas antes de transformarla.
 
 Código: `scripts/2_diagnostico.py`, sobre la captura de `data/raw/2026-11-18/`.
 
@@ -99,7 +104,9 @@ Código: `scripts/2_diagnostico.py`, sobre la captura de `data/raw/2026-11-18/`.
 
 ## 3. Transformar (Tarea 3.3)
 
-Código: `scripts/3_transformacion.py`. Lee la captura de `data/raw/2026-11-18/` y guarda las tablas en `data/processed/2026-11-18/` en CSV, ordenadas por fecha.
+Reglas para pasar de la captura original a las tablas preparadas.
+
+Código: `scripts/3_transformacion.py`. Lee la captura de `data/raw/2026-11-18/` y guarda las tablas en `data/processed/2026-11-18/`, ordenadas por fecha.
 
 ### Reglas
 
@@ -120,17 +127,15 @@ Se aplican en este orden. Si un juego cumple varias reglas de exclusión, cuenta
 ### Procedencia y excluidos
 
 - Cada juego conserva su `appid` y `captura_origen` (`data/raw/2026-11-18`), que localizan su línea en `juegos_fichas.jsonl`. Las tablas hijas llegan a ella por `appid`.
-- Los excluidos se guardan en `excluidos.csv` con `appid`, `nombre`, `motivo`, `detalle` (la regla concreta) y `captura_origen`.
+- Los excluidos se guardan en la tabla `excluidos` con `appid`, `nombre`, `motivo`, `detalle` (la regla concreta) y `captura_origen`.
 
 ### Recuentos
 
 | Registros | Juegos |
 |---|---|
 | Originales (`juegos_fichas.jsonl`) | 81.282 |
-| Preparados (`juegos.csv`) | 81.079 |
-| Excluidos (`excluidos.csv`) | 203: 70 `fuera_periodo`, 64 `no_es_juego` y 69 `precio_anomalo` |
-| Preparados sin precio | 69 |
-| Preparados sin idiomas | 1.842: 1.751 declaran 100 idiomas o más y 91 no traen idiomas |
+| Preparados (`juegos`) | 81.079 |
+| Excluidos (`excluidos`) | 203: 70 `fuera_periodo`, 64 `no_es_juego` y 69 `precio_anomalo` |
 
 Al desplegar las listas cambia la unidad de observación: en `juegos` cada fila es un juego y en las tablas hijas, un valor de un juego. Por eso tienen más filas que juegos, y un juego cuenta en tantos géneros como tenga.
 
@@ -153,10 +158,95 @@ Al desplegar las listas cambia la unidad de observación: en `juegos` cada fila 
 
 ### Ejemplo del resultado
 
-Dictators:No Peace Countryballs (1139890) en `juegos.csv`:
+Dictators:No Peace Countryballs (1139890) en `juegos`:
 
 | appid | nombre | fecha_lanzamiento | resenas_positivas | resenas_negativas | precio_base_centimos | captura_origen |
 |---|---|---|---|---|---|---|
 | 1139890 | Dictators:No Peace Countryballs | 2020-01-01 | 5885 | 360 | 109 | data/raw/2026-11-18 |
 
 Y en las tablas hijas: 4 filas en `generos` (Casual, Indie, Simulation, Strategy), 2 en `categorias` (Family Sharing, Single-player), 8 en `etiquetas` y 11 en `idiomas` (English, French, German…).
+
+<br><br>
+
+## 4. Validar y guardar (Tarea 3.4)
+
+Comprobación de que las tablas preparadas cumplen el diseño, cuántos registros se pierden por el camino y cómo repetir todo el proceso.
+
+Código: `scripts/4_validacion.py`. Lee las tablas de `data/processed/2026-11-18/` y muestra cada control con los casos que lo incumplen.
+
+### Controles
+
+Resultado: **34 de 34 controles correctos**. Para confirmar que los controles funcionan, se probaron con errores metidos a propósito (clave repetida, precio negativo, nombre vacío, HTML en un idioma, tipo cambiado…) y todos los detectaron.
+
+| Control | Tablas | Qué comprueba | Resultado |
+|---|---|---|---|
+| Columnas y tipos | Todas | Las columnas y tipos de la 3.1: fecha como fecha, precio como entero con nulos, `audio` como booleano… | 0 errores |
+| Obligatorios | Todas | Ningún nulo, salvo en `precio_base_centimos` | 0 nulos |
+| Claves | Todas | `appid` en `juegos` y `excluidos`, `(appid, valor)` en las tablas hijas | 0 repetidas |
+| Relaciones | Hijas y `excluidos` | Todo `appid` de las tablas hijas está en `juegos` y ningún excluido está en `juegos` | 0 errores |
+| Rangos | `juegos` | Fecha entre el 01/01/2020 y el 31/12/2025, reseñas y precio no negativos | 0 fuera de rango |
+| Categorías | Hijas y `excluidos` | Motivo de exclusión conocido. Valores sin espacios sobrantes, vacíos ni restos de HTML | 0 errores |
+| Procedencia | `juegos` y `excluidos` | `captura_origen` es `data/raw/2026-11-18` | 0 errores |
+| Balance | `juegos` + `excluidos` | Suman los 81.282 registros de la captura | Cuadra |
+| Guardado | Todas | Al volver a leer cada Parquet, el contenido y los tipos son idénticos. Lo comprueba `3_transformacion.py` al guardar | Idénticas |
+
+### Balance de registros
+
+| Paso | Juegos |
+|---|---|
+| Entran (`juegos_fichas.jsonl`) | 81.282 |
+| Se apartan (`excluidos`) | 203 (0,2 %) |
+| Quedan preparados (`juegos`) | 81.079 |
+
+Algunos juegos preparados no tienen todos los datos. Siguen contando en el resto del análisis, pero faltan en las preguntas que usan ese dato:
+
+| Dato que falta | Juegos | Preguntas afectadas |
+|---|---|---|
+| Reseñas (0 reseñas, sin % positivo) | 4.292 | 1, 3 y 4 |
+| Idiomas | 1.842 (1.751 declaran 100 o más y 91 no traen idiomas) | 4 |
+| Precio | 69 | 3 |
+| Categorías | 51 | 1 y 4 |
+| Género | 50 | 1, 2 y 3 |
+
+La unidad de observación cambia al preparar: entra un registro por juego y salen la tabla `juegos` (un juego por fila) y cuatro tablas con un valor de un juego por fila. El detalle está en los recuentos de la 3.3.
+
+### Archivos generados
+
+En `data/processed/2026-11-18/`, en formato Parquet (7,5 MB en total). Parquet guarda los tipos de cada columna, así que las tablas se leen igual que se guardaron.
+
+| Archivo | Filas | Contenido |
+|---|---|---|
+| `juegos.parquet` | 81.079 | Un juego por fila |
+| `generos.parquet` | 236.231 | Un género de un juego por fila |
+| `categorias.parquet` | 392.094 | Una categoría de un juego por fila |
+| `etiquetas.parquet` | 1.344.486 | Una etiqueta de un juego por fila |
+| `idiomas.parquet` | 333.369 | Un idioma de un juego por fila, con si tiene audio |
+| `excluidos.parquet` | 203 | Un juego apartado por fila, con su motivo |
+
+### Ejecución
+
+- **Captura original:** `data/raw/2026-11-18/juegos_fichas.jsonl` (81.282 registros).
+- **Dependencias:** Python 3.15 con pandas 3.1 y pyarrow 26, instaladas desde `requirements.txt`. El entorno se crea con `python scripts/0_entorno.py` y se activa con `.venv\Scripts\Activate.ps1`.
+- **Comandos**, desde la raíz del repositorio y con el entorno activado:
+
+```
+python scripts/2_diagnostico.py --fecha 2026-11-18
+python scripts/3_transformacion.py --fecha 2026-11-18
+python scripts/4_validacion.py --fecha 2026-11-18
+```
+
+La transformación sobrescribe las tablas de `data/processed/2026-11-18/` cada vez que se ejecuta. La captura de `data/raw/` solo se lee.
+
+### Limitaciones para el análisis
+
+- **No hay ventas:** el éxito se mide con las reseñas, que solo escriben quienes tienen el juego.
+- **Los juegos recientes tienen menos reseñas:** la mediana baja de 25 en 2020 a 12 en 2025. Hay que comparar dentro de cada año o tenerlo en cuenta.
+- **Las reseñas están muy concentradas:** el 1 % de los juegos acumula el 75 % de las reseñas. Las medianas representan mejor al juego típico que las medias.
+- **Muchos juegos tienen pocas reseñas:** el 37 % tiene menos de 10, así que su % positivo es poco fiable.
+- **"Free To Play" y "Early Access" aparecen como géneros** (9.846 y 7.307 juegos), aunque no son temáticos.
+- **Call of Duty® agrupa varios juegos** y suma 812.352 reseñas, que pesan mucho en sus géneros.
+- **El precio es el actual en la tienda de España**, no el de lanzamiento.
+- **Los idiomas los declara el desarrollador:** no se puede comprobar que el juego esté traducido de verdad.
+- **Acceso anticipado:** se usa la primera fecha dentro del periodo. Los juegos que llevan años en acceso anticipado (791 tienen la fecha original antes de 2020) acumulan más reseñas.
+- **2020 fue un año atípico** por la COVID.
+- **Las reglas de "no es un juego" usan el nombre:** una herramienta o demo sin esas palabras en el nombre puede seguir en los datos.
