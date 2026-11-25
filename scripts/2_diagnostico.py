@@ -23,6 +23,8 @@ Argumentos
 Uso
 ---
     python scripts/2_diagnostico.py --fecha 2026-11-18
+
+@author adrianpmdev
 """
 from __future__ import annotations
 
