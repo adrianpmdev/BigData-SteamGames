@@ -9,10 +9,11 @@ Comprobaciones
 2. Calidad: valores ausentes (null, lista vacía y texto vacío), filas repetidas,
    appid repetido y cuadre entre archivos (lista, periodo, fichas y descartados).
 3. Campos relevantes de juegos_fichas.jsonl: géneros, categorías y etiquetas distintos
-   (y variantes de un mismo valor), moneda, precio, reseñas y fechas.
-4. Cobertura temporal: juegos por año y por mes con la fecha asignada (la primera entre
-   la original y la de la tienda que cae en el periodo), juegos fuera del periodo exacto
-   y rango de fechas de petición.
+   (y variantes de un mismo valor), moneda, fichas que no son juegos, precio, reseñas
+   y fechas.
+4. Cobertura temporal: juegos por año y por mes con la fecha asignada (la primera de
+   sus cuatro fechas que cae en el periodo), juegos fuera del periodo exacto y rango de
+   fechas de petición.
 5. Resumen: cifras de los posibles problemas para la tabla de docs/2_preparacion.md.
 
 Argumentos
@@ -55,6 +56,14 @@ FORMATOS_FECHA_TIENDA = ("%d %b, %Y", "%b %d, %Y")
 # acceso anticipado largo o un relanzamiento.
 ANIOS_ACCESO_ANTICIPADO_LARGO = 3
 
+# Fichas de tipo juego que no son juegos (herramientas, servidores, demos...).
+# Una herramienta sin género no tiene más categoría que Family Sharing (ni Single-player
+# ni Multi-player). "Editor", "Server" o "Launcher" no se usan: dan falsos positivos
+# con juegos reales (Server is Down, Video Editor Tycoon, Launcher Heroes...).
+CATEGORIAS_SIN_MODO_DE_JUEGO = {"Family Sharing"}
+PATRON_HERRAMIENTA = r"(?i)\b(?:dedicated server|mod tools?|sdk|artbook|art book|soundtrack)\b"
+PATRON_DEMO = r"(?i)\bdemo\b"
+
 FILAS_EJEMPLO = 2          # registros de ejemplo por archivo (más no caben en una terminal de 120)
 MAS_FRECUENTES = 10
 ANCHO_TITULO = 70
@@ -71,10 +80,13 @@ ANCHO_VALOR = 35           # caracteres máximos de un valor en las tablas de ej
 
 def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
     """
-    Lee un archivo JSONL en un DataFrame, ignorando las líneas que no son JSON válido.
+    Lee un archivo JSONL en un DataFrame, tolerando las líneas dañadas.
 
-    No se usa pd.read_json(lines=True) porque falla entero si la ingesta está
-    escribiendo la última línea mientras se lee.
+    Antes de interpretar cada línea se quitan los bytes nulos y los espacios de los
+    extremos (una escritura interrumpida puede dejar bytes nulos delante de un registro
+    válido); las líneas que quedan vacías se saltan y las que no son un objeto JSON se
+    cuentan como no válidas. No se usa pd.read_json(lines=True) porque falla entero con
+    una sola línea dañada.
 
     Parámetros
     ----------
@@ -82,15 +94,23 @@ def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
 
     Devuelve
     --------
-    (datos, número de líneas ignoradas).
+    (datos, número de líneas no válidas ignoradas).
     """
     registros = []
     ignoradas = 0
     with ruta.open(encoding="utf-8") as archivo:
         for linea in archivo:
+            linea = linea.strip("\x00 \t\r\n")
+            if not linea:
+                continue
             try:
-                registros.append(json.loads(linea))
+                registro = json.loads(linea)
             except ValueError:
+                ignoradas += 1
+                continue
+            if isinstance(registro, dict):
+                registros.append(registro)
+            else:
                 ignoradas += 1
     return pd.DataFrame.from_records(registros), ignoradas
 
@@ -323,22 +343,46 @@ def convertir_fecha_tienda(textos: pd.Series) -> pd.Series:
     return fechas
 
 
-def asignar_fecha(fecha_tienda: pd.Series, fecha_original: pd.Series) -> pd.Series:
+def asignar_fecha(fechas: pd.DataFrame) -> pd.Series:
     """
-    Asigna a cada juego la primera de sus dos fechas que cae dentro del periodo.
+    Asigna a cada juego la primera de sus fechas que cae dentro del periodo exacto.
+
+    Se usan las cuatro fechas porque la ingesta acepta un juego si cualquiera de ellas
+    cae en el periodo (p. ej. la tienda puede mostrar la fecha de la versión 1.0 y
+    Steam la del lanzamiento en acceso anticipado).
 
     Parámetros
     ----------
-    fecha_tienda   : fecha de lanzamiento de la tienda.
-    fecha_original : fecha original de Steam (p. ej. inicio del acceso anticipado).
+    fechas : una columna por fecha del juego (tienda, Steam, original y salida del
+             acceso anticipado).
 
     Devuelve
     --------
     Fecha asignada (NaT si ninguna cae en el periodo).
     """
-    def dentro(fechas: pd.Series) -> pd.Series:
-        return fechas.where(fechas.between(INICIO_PERIODO, FIN_PERIODO))
-    return pd.concat([dentro(fecha_tienda), dentro(fecha_original)], axis=1).min(axis=1)
+    return fechas.where(fechas.apply(lambda fecha: fecha.between(INICIO_PERIODO, FIN_PERIODO))).min(axis=1)
+
+
+def detectar_no_juegos(fichas: pd.DataFrame) -> pd.DataFrame:
+    """
+    Marca las fichas de tipo juego que no son juegos, con una columna por regla.
+
+    Parámetros
+    ----------
+    fichas : contenido de ARCHIVO_FICHAS.
+
+    Devuelve
+    --------
+    Una columna booleana por regla: herramienta sin género ni modo de juego,
+    herramienta por el nombre y demo por el nombre.
+    """
+    sin_modo_de_juego = fichas["generos"].map(lambda generos: not generos) & \
+        fichas["categorias"].map(lambda categorias: set(categorias) <= CATEGORIAS_SIN_MODO_DE_JUEGO)
+    return pd.DataFrame({
+        "herramienta sin género ni modo de juego": sin_modo_de_juego,
+        "herramienta por el nombre": fichas["nombre"].str.contains(PATRON_HERRAMIENTA, regex=True),
+        "demo por el nombre": fichas["nombre"].str.contains(PATRON_DEMO, regex=True),
+    })
 
 
 def revisar_campos(fichas: pd.DataFrame) -> dict[str, int]:
@@ -362,6 +406,12 @@ def revisar_campos(fichas: pd.DataFrame) -> dict[str, int]:
     print("\n--- moneda:")
     mostrar_frecuencias(fichas["moneda"].fillna("(vacío)").value_counts())
 
+    no_juegos = detectar_no_juegos(fichas)
+    print("\n--- Fichas que no son juegos:")
+    for regla, marcadas in no_juegos.items():
+        ejemplos = ", ".join(fichas.loc[marcadas, "nombre"].head(FILAS_EJEMPLO))
+        print(f"  {regla:40} {formatear_numero(int(marcadas.sum())):>8}  (p. ej. {ejemplos})")
+
     total_resenas = fichas["resenas_positivas"] + fichas["resenas_negativas"]
     es_gratis = fichas["es_gratis"].eq(True)
     precio = fichas["precio_base_centimos"]
@@ -376,6 +426,7 @@ def revisar_campos(fichas: pd.DataFrame) -> dict[str, int]:
         "fecha original posterior a la de la tienda": int((fichas["fecha_original"] > fichas["fecha_tienda"]).sum()),
         "juegos sin géneros": int(fichas["generos"].map(lambda valores: not valores).sum()),
         "juegos sin etiquetas": int(fichas["etiquetas"].map(lambda valores: not valores).sum()),
+        "fichas que no son juegos": int(no_juegos.any(axis=1).sum()),
     }
 
 
@@ -467,7 +518,12 @@ def main() -> None:
 
     fichas = fichas.assign(fecha_tienda=convertir_fecha_tienda(fichas["fecha_lanzamiento"]),
                            fecha_original=pd.to_datetime(fichas["fecha_lanzamiento_original"], errors="coerce"))
-    fichas = fichas.assign(fecha_asignada=asignar_fecha(fichas["fecha_tienda"], fichas["fecha_original"]))
+    fichas = fichas.assign(fecha_asignada=asignar_fecha(pd.DataFrame({
+        "tienda": fichas["fecha_tienda"],
+        "steam": pd.to_datetime(fichas["fecha_lanzamiento_steam"], errors="coerce"),
+        "original": fichas["fecha_original"],
+        "salida_acceso_anticipado": pd.to_datetime(fichas["fecha_salida_acceso_anticipado"], errors="coerce"),
+    })))
 
     mostrar_titulo(f"3. CAMPOS RELEVANTES ({ARCHIVO_FICHAS})")
     rangos = revisar_campos(fichas)
