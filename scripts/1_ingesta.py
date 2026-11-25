@@ -57,6 +57,8 @@ Uso
 
     # Captura completa (para continuar tras un corte, el mismo comando)
     python scripts/1_ingesta.py --api-key CLAVE --fecha AAAA-MM-DD
+
+@author adrianpmdev
 """
 from __future__ import annotations
 
