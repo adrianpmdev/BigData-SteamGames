@@ -9,9 +9,10 @@ Controles
 3. Claves: la clave de cada tabla no se repite.
 4. Relaciones: todo appid de las tablas hijas está en juegos y ningún excluido está en juegos.
 5. Rangos: fechas dentro de 2020-2025, reseñas y precio no negativos.
-6. Categorías: motivos de exclusión conocidos y valores de texto limpios (sin espacios
-   sobrantes, vacíos ni restos de HTML).
-7. Procedencia: captura_origen apunta a la captura usada.
+6. Categorías: motivos de exclusión conocidos, valores de texto limpios (sin espacios
+   sobrantes, vacíos ni restos de HTML) y nombres sin espacios sobrantes ni vacíos.
+7. Procedencia: archivo_origen apunta al archivo RAW usado, registro_origen no se repite
+   y en esa línea del archivo está el mismo appid.
 8. Balance: preparados + excluidos = registros de juegos_fichas.jsonl.
 
 Argumentos
@@ -21,6 +22,8 @@ Argumentos
 Uso
 ---
     python scripts/4_validacion.py --fecha 2026-11-18
+
+@author adrianpmdev
 """
 from __future__ import annotations
 
@@ -49,14 +52,15 @@ FIN_PERIODO = pd.Timestamp("2025-12-31")
 DISENO = {
     "juegos": {"appid": "int64", "nombre": "str", "fecha_lanzamiento": "datetime64[ms]",
                "resenas_positivas": "int64", "resenas_negativas": "int64",
-               "precio_base_centimos": "Int64", "captura_origen": "str"},
+               "precio_base_centimos": "Int64", "archivo_origen": "str", "registro_origen": "int64"},
     "generos": {"appid": "int64", "genero": "str"},
     "categorias": {"appid": "int64", "categoria": "str"},
     "etiquetas": {"appid": "int64", "etiqueta": "str"},
     "idiomas": {"appid": "int64", "idioma": "str", "audio": "bool"},
     "excluidos": {"appid": "int64", "nombre": "str", "motivo": "str", "detalle": "str",
-                  "captura_origen": "str"},
+                  "archivo_origen": "str", "registro_origen": "int64"},
 }
+TABLAS_CON_PROCEDENCIA = ("juegos", "excluidos")
 COLUMNAS_OPCIONALES = {("juegos", "precio_base_centimos")}
 CLAVES = {"juegos": ["appid"], "generos": ["appid", "genero"], "categorias": ["appid", "categoria"],
           "etiquetas": ["appid", "etiqueta"], "idiomas": ["appid", "idioma"], "excluidos": ["appid"]}
@@ -75,10 +79,10 @@ ANCHO_TITULO = 70
 # Lectura y consola                                                           #
 # --------------------------------------------------------------------------- #
 
-def contar_registros_jsonl(ruta: Path) -> int:
+def leer_appids_por_linea(ruta: Path) -> pd.Series:
     """
-    Cuenta los registros válidos de un JSONL con el mismo criterio que la transformación
-    (se ignoran bytes nulos, líneas vacías y líneas que no son un objeto JSON).
+    Lee el appid de cada registro válido de un JSONL con el mismo criterio que la
+    transformación (se apartan las líneas vacías y las que no son un objeto JSON).
 
     Parámetros
     ----------
@@ -86,16 +90,18 @@ def contar_registros_jsonl(ruta: Path) -> int:
 
     Devuelve
     --------
-    Número de registros válidos.
+    appid por línea del archivo (índice contado desde 0), solo de las líneas válidas.
     """
-    total = 0
+    appids = {}
     with ruta.open(encoding="utf-8") as archivo:
-        for linea in archivo:
+        for numero_linea, linea in enumerate(archivo):
             try:
-                total += isinstance(json.loads(linea.strip("\x00 \t\r\n")), dict)
+                registro = json.loads(linea.strip("\x00 \t\r\n"))
             except ValueError:
                 continue
-    return total
+            if isinstance(registro, dict):
+                appids[numero_linea] = registro.get("appid")
+    return pd.Series(appids, dtype="Int64")
 
 
 def mostrar_titulo(titulo: str) -> None:
@@ -154,16 +160,16 @@ def controlar_estructura(tablas: dict[str, pd.DataFrame]) -> list[tuple[str, str
     return controles
 
 
-def controlar_contenido(tablas: dict[str, pd.DataFrame], captura_origen: str,
-                        registros_raw: int) -> list[tuple[str, str, int]]:
+def controlar_contenido(tablas: dict[str, pd.DataFrame], archivo_origen: str,
+                        appids_raw: pd.Series) -> list[tuple[str, str, int]]:
     """
     Controla relaciones, rangos, categorías, procedencia y balance (controles 4-8).
 
     Parámetros
     ----------
     tablas         : tablas leídas de data/processed/<fecha>/.
-    captura_origen : ruta relativa de la captura RAW usada.
-    registros_raw  : registros válidos de ARCHIVO_FICHAS.
+    archivo_origen : ruta relativa del archivo RAW usado.
+    appids_raw     : appid por línea de ARCHIVO_FICHAS.
 
     Devuelve
     --------
@@ -184,10 +190,19 @@ def controlar_contenido(tablas: dict[str, pd.DataFrame], captura_origen: str,
         valores = tablas[nombre][CLAVES[nombre][1]]
         sucios = valores.ne(valores.str.strip()) | valores.eq("") | valores.str.contains(PATRON_HTML)
         controles.append((nombre, "valores limpios (sin espacios, vacíos ni HTML)", int(sucios.sum())))
-    controles += [(nombre, f"captura_origen = {captura_origen}", int(tablas[nombre]["captura_origen"].ne(captura_origen).sum()))
-                  for nombre in ("juegos", "excluidos")]
-    controles.append(("juegos + excluidos", f"suman los {formatear_numero(registros_raw)} registros RAW",
-                      abs(len(juegos) + len(excluidos) - registros_raw)))
+    for nombre in TABLAS_CON_PROCEDENCIA:
+        nombres = tablas[nombre]["nombre"]
+        controles.append((nombre, "nombre sin espacios sobrantes ni vacío",
+                          int((nombres.ne(nombres.str.strip()) | nombres.eq("")).sum())))
+    for nombre in TABLAS_CON_PROCEDENCIA:
+        tabla = tablas[nombre]
+        appid_en_linea = tabla["registro_origen"].map(appids_raw)
+        controles += [(nombre, "archivo_origen es el archivo RAW usado", int(tabla["archivo_origen"].ne(archivo_origen).sum())),
+                      (nombre, "registro_origen tiene el mismo appid en el RAW", int(appid_en_linea.ne(tabla["appid"]).fillna(True).sum()))]
+    registros = pd.concat([tablas[nombre]["registro_origen"] for nombre in TABLAS_CON_PROCEDENCIA])
+    controles += [("juegos + excluidos", "registro_origen sin repetir", int(registros.duplicated().sum())),
+                  ("juegos + excluidos", f"suman los {formatear_numero(len(appids_raw))} registros RAW",
+                   abs(len(juegos) + len(excluidos) - len(appids_raw)))]
     return controles
 
 
@@ -224,11 +239,11 @@ def main() -> None:
 
     # Lectura de las tablas preparadas y del recuento de la captura RAW.
     tablas = {nombre: pd.read_parquet(dir_tablas / f"{nombre}{EXTENSION_TABLAS}") for nombre in DISENO}
-    registros_raw = contar_registros_jsonl(dir_captura / ARCHIVO_FICHAS)
-    captura_origen = dir_captura.relative_to(RAIZ).as_posix()
+    appids_raw = leer_appids_por_linea(dir_captura / ARCHIVO_FICHAS)
+    archivo_origen = (dir_captura / ARCHIVO_FICHAS).relative_to(RAIZ).as_posix()
 
     # Controles 1-8.
-    controles = controlar_estructura(tablas) + controlar_contenido(tablas, captura_origen, registros_raw)
+    controles = controlar_estructura(tablas) + controlar_contenido(tablas, archivo_origen, appids_raw)
 
     # Resultado: un control por línea y resumen final.
     mostrar_titulo(f"CONTROLES ({dir_tablas.relative_to(RAIZ).as_posix()})")
