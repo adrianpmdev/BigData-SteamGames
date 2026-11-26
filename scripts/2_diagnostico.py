@@ -80,6 +80,7 @@ ANCHO_VALOR = 35           # caracteres máximos de un valor en las tablas de ej
 # Lectura                                                                     #
 # --------------------------------------------------------------------------- #
 
+
 def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
     """
     Lee un archivo JSONL en un DataFrame, tolerando las líneas dañadas.
@@ -105,6 +106,7 @@ def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
             linea = linea.strip("\x00 \t\r\n")
             if not linea:
                 continue
+
             try:
                 registro = json.loads(linea)
             except ValueError:
@@ -114,12 +116,14 @@ def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
                 registros.append(registro)
             else:
                 ignoradas += 1
+
     return pd.DataFrame.from_records(registros), ignoradas
 
 
 # --------------------------------------------------------------------------- #
 # Consola                                                                     #
 # --------------------------------------------------------------------------- #
+
 
 def mostrar_titulo(titulo: str) -> None:
     """
@@ -161,7 +165,9 @@ def acortar_valor(valor: object) -> str:
     """
     if not isinstance(valor, list) and pd.isna(valor):
         return "(vacío)"
+
     texto = str(valor)
+
     return texto if len(texto) <= ANCHO_VALOR else texto[:ANCHO_VALOR - 3] + "..."
 
 
@@ -174,32 +180,15 @@ def mostrar_frecuencias(frecuencias: pd.Series) -> None:
     ----------
     frecuencias : número de casos por valor.
     """
-    etiquetas = [" / ".join(map(str, valor)) if isinstance(valor, tuple) else str(valor)
-                 for valor in frecuencias.index]
+    etiquetas = [" / ".join(map(str, valor)) if isinstance(valor, tuple) else str(valor) for valor in frecuencias.index]
     ancho = max(map(len, etiquetas), default=0)
     for etiqueta, cantidad in zip(etiquetas, frecuencias):
         print(f"  {etiqueta:{ancho}}  {formatear_numero(int(cantidad)):>8}")
 
-
-def porcentaje(parte: int, total: int) -> str:
-    """
-    Formatea una proporción como porcentaje con un decimal y coma decimal.
-
-    Parámetros
-    ----------
-    parte : casos que cumplen la condición.
-    total : casos totales.
-
-    Devuelve
-    --------
-    Porcentaje como texto (p. ej. "3,5 %"); "-" si total es 0.
-    """
-    return f"{100 * parte / total:.1f} %".replace(".", ",") if total else "-"
-
-
 # --------------------------------------------------------------------------- #
 # 1. Estructura                                                               #
 # --------------------------------------------------------------------------- #
+
 
 def examinar_estructura(nombre: str, datos: pd.DataFrame, ignoradas: int) -> None:
     """
@@ -211,8 +200,7 @@ def examinar_estructura(nombre: str, datos: pd.DataFrame, ignoradas: int) -> Non
     datos     : contenido del archivo.
     ignoradas : líneas no válidas descartadas al leerlo.
     """
-    print(f"\n--- {nombre}: {formatear_numero(len(datos))} filas x {datos.shape[1]} columnas "
-          f"({ignoradas} líneas no válidas ignoradas)")
+    print(f"\n--- {nombre}: {formatear_numero(len(datos))} filas x {datos.shape[1]} columnas ({ignoradas} líneas no válidas ignoradas)")
     # Una fila por columna (tipo y primeros registros) para que quepa en la consola.
     ejemplos = datos.head(FILAS_EJEMPLO).T.map(acortar_valor)
     ejemplos.columns = [f"registro {numero}" for numero in range(1, len(ejemplos.columns) + 1)]
@@ -222,6 +210,7 @@ def examinar_estructura(nombre: str, datos: pd.DataFrame, ignoradas: int) -> Non
 # --------------------------------------------------------------------------- #
 # 2. Calidad                                                                  #
 # --------------------------------------------------------------------------- #
+
 
 def contar_ausentes(datos: pd.DataFrame) -> pd.DataFrame:
     """
@@ -242,6 +231,7 @@ def contar_ausentes(datos: pd.DataFrame) -> pd.DataFrame:
         "listas_vacias": datos.apply(lambda columna: columna.map(lambda v: isinstance(v, list) and not v).sum()),
         "textos_vacios": datos.apply(lambda columna: columna.map(lambda v: isinstance(v, str) and not v.strip()).sum()),
     })
+
     return ausentes[ausentes.sum(axis=1) > 0]
 
 
@@ -260,11 +250,11 @@ def contar_repetidos(datos: pd.DataFrame) -> tuple[int, int]:
     (filas repetidas, appid repetidos).
     """
     comparable = datos.apply(lambda columna: columna.map(lambda v: tuple(v) if isinstance(v, list) else v))
+
     return int(comparable.duplicated().sum()), int(datos[CLAVE].duplicated().sum())
 
 
-def comprobar_cuadre(lista: pd.DataFrame, periodo: pd.DataFrame, fichas: pd.DataFrame,
-                     descartados: pd.DataFrame) -> dict[str, int]:
+def comprobar_cuadre(lista: pd.DataFrame, periodo: pd.DataFrame, fichas: pd.DataFrame, descartados: pd.DataFrame) -> dict[str, int]:
     """
     Comprueba que los appid de los cuatro archivos encajan entre sí.
 
@@ -282,6 +272,7 @@ def comprobar_cuadre(lista: pd.DataFrame, periodo: pd.DataFrame, fichas: pd.Data
     ids_lista, ids_periodo, ids_fichas = set(lista[CLAVE]), set(periodo[CLAVE]), set(fichas[CLAVE])
     ids_desc_periodo = set(descartados.loc[descartados["descartado_en"] == "periodo", CLAVE])
     ids_desc_fichas = set(descartados.loc[descartados["descartado_en"] == "fichas", CLAVE])
+
     return {
         "lista sin periodo ni descartados": len(ids_lista - ids_periodo - ids_desc_periodo),
         "en periodo y descartados en periodo": len(ids_periodo & ids_desc_periodo),
@@ -294,22 +285,6 @@ def comprobar_cuadre(lista: pd.DataFrame, periodo: pd.DataFrame, fichas: pd.Data
 # --------------------------------------------------------------------------- #
 # 3. Campos relevantes                                                        #
 # --------------------------------------------------------------------------- #
-
-def contar_valores_lista(columna: pd.Series) -> pd.Series:
-    """
-    Cuenta cuántos juegos tienen cada valor de una columna de listas.
-
-    Parámetros
-    ----------
-    columna : columna con una lista de textos por juego.
-
-    Devuelve
-    --------
-    Número de juegos por valor, de más a menos frecuente.
-    """
-    return columna.explode().dropna().value_counts()
-
-
 def buscar_variantes(valores: pd.Index) -> list[list[str]]:
     """
     Busca valores que solo se diferencian en mayúsculas, espacios o guiones.
@@ -324,6 +299,7 @@ def buscar_variantes(valores: pd.Index) -> list[list[str]]:
     """
     normalizados = pd.Series(valores, index=valores).str.lower().str.replace(r"[\s\-_]+", "", regex=True)
     grupos = normalizados.groupby(normalizados).groups
+
     return [sorted(grupo) for grupo in grupos.values() if len(grupo) > 1]
 
 
@@ -342,27 +318,8 @@ def convertir_fecha_tienda(textos: pd.Series) -> pd.Series:
     fechas = pd.Series(pd.NaT, index=textos.index)
     for formato in FORMATOS_FECHA_TIENDA:
         fechas = fechas.fillna(pd.to_datetime(textos, format=formato, errors="coerce"))
+
     return fechas
-
-
-def asignar_fecha(fechas: pd.DataFrame) -> pd.Series:
-    """
-    Asigna a cada juego la primera de sus fechas que cae dentro del periodo exacto.
-
-    Se usan las cuatro fechas porque la ingesta acepta un juego si cualquiera de ellas
-    cae en el periodo (p. ej. la tienda puede mostrar la fecha de la versión 1.0 y
-    Steam la del lanzamiento en acceso anticipado).
-
-    Parámetros
-    ----------
-    fechas : una columna por fecha del juego (tienda, Steam, original y salida del
-             acceso anticipado).
-
-    Devuelve
-    --------
-    Fecha asignada (NaT si ninguna cae en el periodo).
-    """
-    return fechas.where(fechas.apply(lambda fecha: fecha.between(INICIO_PERIODO, FIN_PERIODO))).min(axis=1)
 
 
 def detectar_no_juegos(fichas: pd.DataFrame) -> pd.DataFrame:
@@ -378,8 +335,8 @@ def detectar_no_juegos(fichas: pd.DataFrame) -> pd.DataFrame:
     Una columna booleana por regla: herramienta sin género ni modo de juego,
     herramienta por el nombre y demo por el nombre.
     """
-    sin_modo_de_juego = fichas["generos"].map(lambda generos: not generos) & \
-        fichas["categorias"].map(lambda categorias: set(categorias) <= CATEGORIAS_SIN_MODO_DE_JUEGO)
+    sin_modo_de_juego = fichas["generos"].map(lambda generos: not generos) & fichas["categorias"].map(lambda categorias: set(categorias) <= CATEGORIAS_SIN_MODO_DE_JUEGO)
+
     return pd.DataFrame({
         "herramienta sin género ni modo de juego": sin_modo_de_juego,
         "herramienta por el nombre": fichas["nombre"].str.contains(PATRON_HERRAMIENTA, regex=True),
@@ -400,7 +357,7 @@ def revisar_campos(fichas: pd.DataFrame) -> dict[str, int]:
     Cuentas de valores fuera de rango o incoherentes.
     """
     for columna in COLUMNAS_LISTA:
-        frecuencias = contar_valores_lista(fichas[columna])
+        frecuencias = fichas[columna].explode().dropna().value_counts()
         print(f"\n--- {columna}: {len(frecuencias)} valores distintos. Más frecuentes:")
         mostrar_frecuencias(frecuencias.head(MAS_FRECUENTES))
         print(f"  Variantes de un mismo valor: {buscar_variantes(frecuencias.index) or 'ninguna'}")
@@ -417,6 +374,7 @@ def revisar_campos(fichas: pd.DataFrame) -> dict[str, int]:
     total_resenas = fichas["resenas_positivas"] + fichas["resenas_negativas"]
     es_gratis = fichas["es_gratis"].eq(True)
     precio = fichas["precio_base_centimos"]
+
     return {
         "reseñas negativas (< 0)": int((fichas[["resenas_positivas", "resenas_negativas"]] < 0).any(axis=1).sum()),
         "juegos con 0 reseñas": int((total_resenas == 0).sum()),
@@ -435,6 +393,7 @@ def revisar_campos(fichas: pd.DataFrame) -> dict[str, int]:
 # --------------------------------------------------------------------------- #
 # 4. Cobertura temporal                                                       #
 # --------------------------------------------------------------------------- #
+
 
 def revisar_cobertura(fichas: pd.DataFrame) -> dict[str, int]:
     """
@@ -456,21 +415,21 @@ def revisar_cobertura(fichas: pd.DataFrame) -> dict[str, int]:
     mostrar_frecuencias(asignada[asignada.dt.year == 2020].dt.strftime("%Y-%m").value_counts().sort_index())
 
     peticiones = pd.to_datetime(fichas["fecha_peticion"], utc=True)
-    print(f"\n--- Fechas de petición: de {peticiones.min():%d/%m/%Y %H:%M} "
-          f"a {peticiones.max():%d/%m/%Y %H:%M} (UTC)")
+    print(f"\n--- Fechas de petición: de {peticiones.min():%d/%m/%Y %H:%M} a {peticiones.max():%d/%m/%Y %H:%M} (UTC)")
 
     diferencia_anios = (fichas["fecha_tienda"] - fichas["fecha_original"]).dt.days / 365.25
+
     return {
         "fuera del periodo exacto (margen de la ingesta)": int(asignada.isna().sum()),
         "fecha original anterior a 2020": int((fichas["fecha_original"] < INICIO_PERIODO).sum()),
-        f"acceso anticipado de más de {ANIOS_ACCESO_ANTICIPADO_LARGO} años":
-            int((diferencia_anios > ANIOS_ACCESO_ANTICIPADO_LARGO).sum()),
+        f"acceso anticipado de más de {ANIOS_ACCESO_ANTICIPADO_LARGO} años": int((diferencia_anios > ANIOS_ACCESO_ANTICIPADO_LARGO).sum()),
     }
 
 
 # --------------------------------------------------------------------------- #
 # Argumentos de la línea de comandos                                          #
 # --------------------------------------------------------------------------- #
+
 
 def parsear_argumentos() -> argparse.Namespace:
     """
@@ -481,14 +440,15 @@ def parsear_argumentos() -> argparse.Namespace:
     Argumentos: fecha.
     """
     parser = argparse.ArgumentParser(description="Diagnóstico de la captura RAW de juegos de Steam.")
-    parser.add_argument("--fecha", default=FECHA_CAPTURA_POR_DEFECTO,
-                        help=f"Carpeta de la captura en data/raw/ (por defecto, {FECHA_CAPTURA_POR_DEFECTO}).")
+    parser.add_argument("--fecha", default=FECHA_CAPTURA_POR_DEFECTO, help=f"Carpeta de la captura en data/raw/ (por defecto, {FECHA_CAPTURA_POR_DEFECTO}).")
+
     return parser.parse_args()
 
 
 # =========================================================================== #
 # MAIN                                                                        #
 # =========================================================================== #
+
 
 def main() -> None:
     """Carga la captura y muestra el diagnóstico de cada apartado y el resumen."""
@@ -498,19 +458,19 @@ def main() -> None:
         raise SystemExit(f"No existe la captura {dir_captura}.")
 
     mostrar_titulo(f"1. ESTRUCTURA ({dir_captura})")
-    archivos = {nombre: leer_jsonl(dir_captura / nombre)
-                for nombre in (ARCHIVO_LISTA_JUEGOS, ARCHIVO_PERIODO, ARCHIVO_FICHAS, ARCHIVO_DESCARTADOS)}
+    archivos = {nombre: leer_jsonl(dir_captura / nombre) for nombre in (ARCHIVO_LISTA_JUEGOS, ARCHIVO_PERIODO, ARCHIVO_FICHAS, ARCHIVO_DESCARTADOS)}
     for nombre, (datos, ignoradas) in archivos.items():
         examinar_estructura(nombre, datos, ignoradas)
+
     lista, periodo, fichas, descartados = (datos for datos, _ in archivos.values())
 
     mostrar_titulo("2. CALIDAD")
     for nombre, (datos, _) in archivos.items():
         filas_repetidas, claves_repetidas = contar_repetidos(datos)
-        print(f"\n--- {nombre}: {formatear_numero(filas_repetidas)} filas repetidas, "
-              f"{formatear_numero(claves_repetidas)} {CLAVE} repetidos")
+        print(f"\n--- {nombre}: {formatear_numero(filas_repetidas)} filas repetidas, {formatear_numero(claves_repetidas)} {CLAVE} repetidos")
         ausentes = contar_ausentes(datos)
         print(ausentes.map(formatear_numero).to_string() if not ausentes.empty else "Sin valores ausentes.")
+
     print("\n--- Motivos de descarte:")
     mostrar_frecuencias(descartados.groupby(["descartado_en", "motivo"]).size())
     cuadre = comprobar_cuadre(lista, periodo, fichas, descartados)
@@ -518,14 +478,15 @@ def main() -> None:
     for comprobacion, cantidad in cuadre.items():
         print(f"  {comprobacion:45} {formatear_numero(cantidad):>8}")
 
-    fichas = fichas.assign(fecha_tienda=convertir_fecha_tienda(fichas["fecha_lanzamiento"]),
-                           fecha_original=pd.to_datetime(fichas["fecha_lanzamiento_original"], errors="coerce"))
-    fichas = fichas.assign(fecha_asignada=asignar_fecha(pd.DataFrame({
+    fichas = fichas.assign(fecha_tienda=convertir_fecha_tienda(fichas["fecha_lanzamiento"]), fecha_original=pd.to_datetime(fichas["fecha_lanzamiento_original"], errors="coerce"))
+    # Fecha asignada: la primera de las cuatro fechas que cae en el periodo exacto.
+    fechas = pd.DataFrame({
         "tienda": fichas["fecha_tienda"],
         "steam": pd.to_datetime(fichas["fecha_lanzamiento_steam"], errors="coerce"),
         "original": fichas["fecha_original"],
         "salida_acceso_anticipado": pd.to_datetime(fichas["fecha_salida_acceso_anticipado"], errors="coerce"),
-    })))
+    })
+    fichas = fichas.assign(fecha_asignada=fechas.where(fechas.apply(lambda fecha: fecha.between(INICIO_PERIODO, FIN_PERIODO))).min(axis=1))
 
     mostrar_titulo(f"3. CAMPOS RELEVANTES ({ARCHIVO_FICHAS})")
     rangos = revisar_campos(fichas)
@@ -535,7 +496,7 @@ def main() -> None:
 
     mostrar_titulo(f"5. RESUMEN ({formatear_numero(len(fichas))} juegos en {ARCHIVO_FICHAS})")
     for comprobacion, cantidad in (rangos | cobertura).items():
-        print(f"  {comprobacion:50} {formatear_numero(cantidad):>8}  ({porcentaje(cantidad, len(fichas))})")
+        print(f"  {comprobacion:50} {formatear_numero(cantidad):>8}  ({f'{100 * cantidad / len(fichas):.1f}'.replace('.', ',')} %)")
 
 
 if __name__ == "__main__":

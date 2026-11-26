@@ -67,12 +67,9 @@ INICIO_PERIODO = pd.Timestamp("2020-01-01")
 FIN_PERIODO = pd.Timestamp("2025-12-31")
 # Formatos de fecha de la ficha de la tienda, según la región ("19 Nov, 2020" o "Nov 19, 2020").
 FORMATOS_FECHA_TIENDA = ("%d %b, %Y", "%b %d, %Y")
-COLUMNAS_FECHA_STEAM = ("fecha_lanzamiento_steam", "fecha_lanzamiento_original",
-                        "fecha_salida_acceso_anticipado")
+COLUMNAS_FECHA_STEAM = ("fecha_lanzamiento_steam", "fecha_lanzamiento_original", "fecha_salida_acceso_anticipado")
 # Columnas de juegos_fichas.jsonl que usan las reglas.
-COLUMNAS_NECESARIAS = ("appid", "nombre", "fecha_lanzamiento", *COLUMNAS_FECHA_STEAM, "generos",
-                       "categorias", "etiquetas", "es_gratis", "precio_base_centimos", "moneda",
-                       "idiomas", "resenas_positivas", "resenas_negativas")
+COLUMNAS_NECESARIAS = ("appid", "nombre", "fecha_lanzamiento", *COLUMNAS_FECHA_STEAM, "generos", "categorias", "etiquetas", "es_gratis", "precio_base_centimos", "moneda", "idiomas", "resenas_positivas", "resenas_negativas")
 
 # Fichas de tipo juego que no son juegos. "Editor", "Server" o "Launcher" no se usan:
 # dan falsos positivos con juegos reales (Server is Down, Video Editor Tycoon...).
@@ -91,15 +88,20 @@ MARCA_AUDIO = "<strong>*</strong>"
 MIN_IDIOMAS_NO_FIABLE = 100
 
 # Tabla de salida -> (columna de juegos_fichas, columna del valor).
-TABLAS_LISTA = {"generos": ("generos", "genero"),
-                "categorias": ("categorias", "categoria"),
-                "etiquetas": ("etiquetas", "etiqueta")}
-COLUMNAS_JUEGOS = ["appid", "nombre", "fecha_lanzamiento", "resenas_positivas", "resenas_negativas",
-                   "precio_base_centimos", "archivo_origen", "registro_origen"]
+TABLAS_LISTA = {
+    "generos": ("generos", "genero"),
+    "categorias": ("categorias", "categoria"),
+    "etiquetas": ("etiquetas", "etiqueta"),
+}
+COLUMNAS_JUEGOS = ["appid", "nombre", "fecha_lanzamiento", "resenas_positivas", "resenas_negativas", "precio_base_centimos", "archivo_origen", "registro_origen"]
 COLUMNAS_EXCLUIDOS = ["appid", "nombre", "motivo", "detalle", "archivo_origen", "registro_origen"]
 # Tabla hija -> columna del valor (junto con appid forma su clave).
-CLAVES_TABLAS_HIJAS = {"generos": "genero", "categorias": "categoria", "etiquetas": "etiqueta",
-                       "idiomas": "idioma"}
+CLAVES_TABLAS_HIJAS = {
+    "generos": "genero",
+    "categorias": "categoria",
+    "etiquetas": "etiqueta",
+    "idiomas": "idioma",
+}
 FORMATO_FECHA_SALIDA = "%d/%m/%Y"   # solo para mostrar por pantalla
 EXTENSION_TABLAS = ".parquet"
 ANCHO_TITULO = 70
@@ -141,6 +143,7 @@ def leer_jsonl(ruta: Path) -> tuple[pd.DataFrame, int]:
                 registros.append({**registro, "registro_origen": numero_linea})
             else:
                 apartadas += 1
+
     return pd.DataFrame.from_records(registros), apartadas
 
 
@@ -193,15 +196,15 @@ def asignar_fecha(fichas: pd.DataFrame) -> pd.Series:
     """
     fecha_tienda = pd.Series(pd.NaT, index=fichas.index)
     for formato in FORMATOS_FECHA_TIENDA:
-        fecha_tienda = fecha_tienda.fillna(pd.to_datetime(fichas["fecha_lanzamiento"], format=formato,
-                                                          errors="coerce"))
-    fechas = pd.concat([fecha_tienda] + [pd.to_datetime(fichas[columna], errors="coerce")
-                                         for columna in COLUMNAS_FECHA_STEAM], axis=1)
+        fecha_tienda = fecha_tienda.fillna(pd.to_datetime(fichas["fecha_lanzamiento"], format=formato, errors="coerce"))
+
+    fechas = pd.concat([fecha_tienda] + [pd.to_datetime(fichas[columna], errors="coerce") for columna in COLUMNAS_FECHA_STEAM], axis=1)
     fechas.columns = ["fecha_lanzamiento", *COLUMNAS_FECHA_STEAM]
     con_texto = fichas[list(fechas.columns)].apply(lambda columna: columna.fillna("").astype(str).str.strip().ne(""))
     sin_convertir = (con_texto & fechas.isna()).sum()
     if sin_convertir.any():
         raise ValueError(f"Fechas que no se pueden convertir: {sin_convertir[sin_convertir > 0].to_dict()}.")
+
     return fechas.where(fechas.apply(lambda fecha: fecha.between(INICIO_PERIODO, FIN_PERIODO))).min(axis=1)
 
 
@@ -230,19 +233,16 @@ def decidir_exclusiones(fichas: pd.DataFrame) -> pd.DataFrame:
         ("no_es_juego", "herramienta sin género ni modo de juego", sin_genero & sin_modo_de_juego),
         ("no_es_juego", "herramienta por el nombre", fichas["nombre"].str.contains(PATRON_HERRAMIENTA, na=False)),
         ("no_es_juego", "demo por el nombre", fichas["nombre"].str.contains(PATRON_DEMO, na=False)),
-        ("precio_anomalo", f"precio en otra moneda y {MAX_RESENAS_PRECIO_ANOMALO} reseñas o menos",
-         en_otra_moneda & pocas_resenas),
-        ("precio_anomalo", f"gratis con precio y {MAX_RESENAS_PRECIO_ANOMALO} reseñas o menos",
-         gratis_con_precio & pocas_resenas),
-        ("precio_anomalo", f"de pago sin precio y {MAX_RESENAS_PRECIO_ANOMALO} reseñas o menos",
-         de_pago_sin_precio & pocas_resenas),
-        ("precio_anomalo", f"de pago sin precio con género {GENERO_GRATIS}",
-         de_pago_sin_precio & fichas["generos"].map(lambda generos: GENERO_GRATIS in generos)),
+        ("precio_anomalo", f"precio en otra moneda y {MAX_RESENAS_PRECIO_ANOMALO} reseñas o menos", en_otra_moneda & pocas_resenas),
+        ("precio_anomalo", f"gratis con precio y {MAX_RESENAS_PRECIO_ANOMALO} reseñas o menos", gratis_con_precio & pocas_resenas),
+        ("precio_anomalo", f"de pago sin precio y {MAX_RESENAS_PRECIO_ANOMALO} reseñas o menos", de_pago_sin_precio & pocas_resenas),
+        ("precio_anomalo", f"de pago sin precio con género {GENERO_GRATIS}", de_pago_sin_precio & fichas["generos"].map(lambda generos: GENERO_GRATIS in generos)),
     ]
     exclusiones = pd.DataFrame({"motivo": pd.NA, "detalle": pd.NA}, index=fichas.index, dtype="object")
     for motivo, detalle, cumple in reglas:
         libres = cumple & exclusiones["motivo"].isna()
         exclusiones.loc[libres, ["motivo", "detalle"]] = [motivo, detalle]
+
     return exclusiones
 
 
@@ -262,6 +262,7 @@ def corregir_precio(juegos: pd.DataFrame) -> pd.Series:
     gratis_free_to_play = juegos["es_gratis"] & juegos["generos"].map(lambda generos: GENERO_GRATIS in generos)
     precio[juegos["es_gratis"] & precio.isna() | gratis_free_to_play] = 0
     precio[juegos["moneda"].notna() & juegos["moneda"].ne(MONEDA)] = pd.NA
+
     return precio
 
 
@@ -280,9 +281,11 @@ def separar_idiomas(texto: object) -> list[tuple[str, bool]]:
     """
     if not isinstance(texto, str):
         return []
+
     idiomas = [idioma.strip() for idioma in texto.split(SEPARADOR_NOTA_IDIOMAS)[0].split(",") if idioma.strip()]
     if len(idiomas) >= MIN_IDIOMAS_NO_FIABLE:
         return []
+
     return [(idioma.removesuffix(MARCA_AUDIO).strip(), idioma.endswith(MARCA_AUDIO)) for idioma in idiomas]
 
 
@@ -303,11 +306,7 @@ def construir_juegos(juegos: pd.DataFrame, archivo_origen: str) -> pd.DataFrame:
     --------
     Tabla juegos, ordenada por fecha y appid.
     """
-    return juegos.assign(
-        fecha_lanzamiento=juegos["fecha_asignada"].astype("datetime64[ms]"),
-        precio_base_centimos=corregir_precio(juegos),
-        archivo_origen=archivo_origen,
-    )[COLUMNAS_JUEGOS].sort_values(["fecha_lanzamiento", "appid"])
+    return juegos.assign(fecha_lanzamiento=juegos["fecha_asignada"].astype("datetime64[ms]"), precio_base_centimos=corregir_precio(juegos), archivo_origen=archivo_origen)[COLUMNAS_JUEGOS].sort_values(["fecha_lanzamiento", "appid"])
 
 
 def desplegar_lista(juegos: pd.DataFrame, columna: str, nombre_valor: str) -> pd.DataFrame:
@@ -327,6 +326,7 @@ def desplegar_lista(juegos: pd.DataFrame, columna: str, nombre_valor: str) -> pd
     filas = juegos[["appid", columna]].explode(columna).rename(columns={columna: nombre_valor})
     filas[nombre_valor] = filas[nombre_valor].str.strip()
     filas = filas[filas[nombre_valor].fillna("").ne("")]
+
     return filas.drop_duplicates()
 
 
@@ -344,6 +344,7 @@ def desplegar_idiomas(juegos: pd.DataFrame) -> pd.DataFrame:
     """
     filas = juegos[["appid"]].assign(par=juegos["idiomas"].map(separar_idiomas)).explode("par").dropna()
     filas["idioma"], filas["audio"] = filas["par"].str[0], filas["par"].str[1].astype(bool)
+
     return filas[["appid", "idioma", "audio"]].drop_duplicates(["appid", "idioma"])
 
 
@@ -362,8 +363,8 @@ def ordenar_como_juegos(tabla: pd.DataFrame, juegos: pd.DataFrame, nombre_valor:
     Tabla ordenada.
     """
     posicion = pd.Series(range(len(juegos)), index=juegos["appid"])
-    return tabla.assign(posicion=tabla["appid"].map(posicion)).sort_values(
-        ["posicion", nombre_valor]).drop(columns="posicion")
+
+    return tabla.assign(posicion=tabla["appid"].map(posicion)).sort_values(["posicion", nombre_valor]).drop(columns="posicion")
 
 
 def anadir_fecha_captura(tabla: pd.DataFrame, fecha_captura: pd.Timestamp) -> pd.DataFrame:
@@ -381,6 +382,7 @@ def anadir_fecha_captura(tabla: pd.DataFrame, fecha_captura: pd.Timestamp) -> pd
     """
     columnas = list(tabla.columns)
     columnas.insert(columnas.index("appid") + 1, "fecha_captura")
+
     return tabla.assign(fecha_captura=fecha_captura).astype({"fecha_captura": "datetime64[ms]"})[columnas]
 
 
@@ -427,19 +429,15 @@ def mostrar_antes_despues(fichas: pd.DataFrame, juegos: pd.DataFrame, idiomas: p
     """
     preparados = juegos.set_index("appid")
     originales = fichas.set_index("appid").loc[preparados.index]
-    ejemplos = [originales.index[originales["es_gratis"]][0],
-                originales.index[originales["idiomas"].fillna("").str.contains(MARCA_AUDIO, regex=False)
-                                 & originales["idiomas"].fillna("").str.count(",").ge(2)][0]]
+    ejemplos = [originales.index[originales["es_gratis"]][0], originales.index[originales["idiomas"].fillna("").str.contains(MARCA_AUDIO, regex=False) & originales["idiomas"].fillna("").str.count(",").ge(2)][0]]
     for appid in ejemplos:
         original, preparado = originales.loc[appid], preparados.loc[appid]
         print(f"\n--- {appid} {original['nombre']}")
-        print(f"  fecha:   {original['fecha_lanzamiento']!r:45} -> "
-              f"{preparado['fecha_lanzamiento'].strftime(FORMATO_FECHA_SALIDA)}")
+        print(f"  fecha:   {original['fecha_lanzamiento']!r:45} -> {preparado['fecha_lanzamiento'].strftime(FORMATO_FECHA_SALIDA)}")
         precio_original = "(vacío)" if pd.isna(original["precio_base_centimos"]) else int(original["precio_base_centimos"])
         print(f"  precio:  {precio_original!s:45} -> {preparado['precio_base_centimos']}")
         suyos = idiomas[idiomas["appid"] == appid]
-        print(f"  idiomas: {str(original['idiomas'])[:43]!r:45} -> {len(suyos)} idiomas "
-              f"({int(suyos['audio'].sum())} doblados): {', '.join(suyos['idioma'])}")
+        print(f"  idiomas: {str(original['idiomas'])[:43]!r:45} -> {len(suyos)} idiomas ({int(suyos['audio'].sum())} doblados): {', '.join(suyos['idioma'])}")
 
 
 # --------------------------------------------------------------------------- #
@@ -455,8 +453,8 @@ def parsear_argumentos() -> argparse.Namespace:
     Argumentos: fecha.
     """
     parser = argparse.ArgumentParser(description="Transformación de la captura RAW de juegos de Steam.")
-    parser.add_argument("--fecha", default=FECHA_CAPTURA_POR_DEFECTO,
-                        help=f"Carpeta de la captura en data/raw/ (por defecto, {FECHA_CAPTURA_POR_DEFECTO}).")
+    parser.add_argument("--fecha", default=FECHA_CAPTURA_POR_DEFECTO, help=f"Carpeta de la captura en data/raw/ (por defecto, {FECHA_CAPTURA_POR_DEFECTO}).")
+
     return parser.parse_args()
 
 
@@ -470,6 +468,7 @@ def main() -> None:
     dir_captura = DIR_RAW / args.fecha
     if not (dir_captura / ARCHIVO_FICHAS).is_file():
         raise SystemExit(f"No existe {dir_captura / ARCHIVO_FICHAS}.")
+
     try:
         fecha_captura = pd.to_datetime(args.fecha, format=FORMATO_CARPETA_CAPTURA)
     except ValueError:
@@ -496,6 +495,7 @@ def main() -> None:
     tablas = {"juegos": juegos}
     for nombre, (columna, nombre_valor) in TABLAS_LISTA.items():
         tablas[nombre] = desplegar_lista(preparados, columna, nombre_valor)
+
     tablas["idiomas"] = desplegar_idiomas(preparados)
 
     # Orden de las tablas hijas igual que juegos (por fecha).
@@ -520,13 +520,12 @@ def main() -> None:
     print(f"  Excluidos             {formatear_numero(len(excluidos)):>9}")
     for (motivo, detalle), cantidad in excluidos.groupby(["motivo", "detalle"]).size().items():
         print(f"    {motivo:15} {detalle:50} {formatear_numero(cantidad):>6}")
+
     sin_idiomas = int((~juegos["appid"].isin(tablas["idiomas"]["appid"])).sum())
-    print(f"\n  Juegos sin precio: {formatear_numero(int(juegos['precio_base_centimos'].isna().sum()))}"
-          f" | sin idiomas fiables: {formatear_numero(sin_idiomas)}")
+    print(f"\n  Juegos sin precio: {formatear_numero(int(juegos['precio_base_centimos'].isna().sum()))} | sin idiomas fiables: {formatear_numero(sin_idiomas)}")
     print("\n  Filas por tabla (unidad de observación):")
     for nombre, tabla in tablas.items():
-        por_juego = (f"  ({len(tabla) / len(juegos):.1f} por juego)".replace(".", ",")
-                     if nombre in CLAVES_TABLAS_HIJAS else "")
+        por_juego = (f"  ({len(tabla) / len(juegos):.1f} por juego)".replace(".", ",") if nombre in CLAVES_TABLAS_HIJAS else "")
         print(f"    {nombre + EXTENSION_TABLAS:20} {formatear_numero(len(tabla)):>10}{por_juego}")
 
     # Revisión: valores de dos juegos antes y después de transformar.

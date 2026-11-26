@@ -59,11 +59,8 @@ def obtener_version_python_venv() -> str | None:
     Versión en formato 'X.Y', o None si .venv no existe o está roto.
     """
     try:
-        salida = subprocess.run(
-            [str(PYTHON_VENV), "-c",
-             "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-            capture_output=True, text=True, check=True,
-        )
+        salida = subprocess.run([str(PYTHON_VENV), "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], capture_output=True, text=True, check=True)
+
         return salida.stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -93,7 +90,9 @@ def preparar_venv(recrear: bool) -> None:
 
         if motivo is None:
             print(f"El entorno ya existe (Python {version}): {DIR_VENV}")
+
             return
+
         print(f"Borrando el entorno anterior ({motivo})...")
         shutil.rmtree(DIR_VENV)
 
@@ -123,11 +122,7 @@ def instalar_requirements() -> None:
     if resultado.returncode == 0:
         return
 
-    print(
-        "\nLa instalación normal ha fallado (seguramente alguna librería no tiene rueda "
-        f"precompilada para Python {VERSION_ACTUAL}).\n"
-        "Reintentando solo con paquetes precompilados (--only-binary :all:)...\n"
-    )
+    print(f"\nLa instalación normal ha fallado (seguramente alguna librería no tiene rueda precompilada para Python {VERSION_ACTUAL}).\nReintentando solo con paquetes precompilados (--only-binary :all:)...\n")
     subprocess.run([*pip, "--only-binary", ":all:", "-r", str(REQUIREMENTS)], check=True)
 
 
@@ -141,6 +136,7 @@ def parsear_argumentos() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="Crea .venv e instala requirements.txt")
     parser.add_argument("--recrear", action="store_true", help="borra y recrea .venv")
+
     return parser.parse_args()
 
 

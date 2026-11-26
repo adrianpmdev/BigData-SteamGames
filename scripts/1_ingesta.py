@@ -145,6 +145,7 @@ log = logging.getLogger("ingesta")
 # Fechas: criterio de periodo                                                 #
 # --------------------------------------------------------------------------- #
 
+
 def esta_en_periodo(fecha: date) -> bool:
     """
     Indica si una fecha está en el periodo, con un día de margen en cada extremo.
@@ -180,23 +181,10 @@ def fecha_tienda_en_periodo(texto: str) -> bool:
             return esta_en_periodo(datetime.strptime(texto, formato).date())
         except ValueError:
             continue
+
     anio = re.search(r"\b\d{4}\b", texto)
+
     return bool(anio) and ANIO_INICIO <= int(anio.group()) <= ANIO_FIN
-
-
-def convertir_timestamp_a_fecha(timestamp: int) -> date:
-    """
-    Convierte una fecha Unix (segundos, UTC) en fecha.
-
-    Parámetros
-    ----------
-    timestamp : segundos desde 1970-01-01 UTC.
-
-    Devuelve
-    --------
-    Fecha correspondiente.
-    """
-    return datetime.fromtimestamp(timestamp, timezone.utc).date()
 
 
 def extraer_fechas_steam(item: dict[str, Any] | None) -> dict[str, str | None]:
@@ -212,8 +200,8 @@ def extraer_fechas_steam(item: dict[str, Any] | None) -> dict[str, str | None]:
     Cada fecha de CAMPOS_FECHA_STEAM con su nombre guardado, en AAAA-MM-DD (UTC) o None.
     """
     lanzamiento = (item or {}).get("release") or {}
-    return {nombre: convertir_timestamp_a_fecha(lanzamiento[campo]).isoformat() if lanzamiento.get(campo) else None
-            for campo, nombre in CAMPOS_FECHA_STEAM.items()}
+
+    return {nombre: datetime.fromtimestamp(lanzamiento[campo], timezone.utc).date().isoformat() if lanzamiento.get(campo) else None for campo, nombre in CAMPOS_FECHA_STEAM.items()}
 
 
 def alguna_fecha_steam_en_periodo(fechas: dict[str, str | None]) -> bool:
@@ -234,6 +222,7 @@ def alguna_fecha_steam_en_periodo(fechas: dict[str, str | None]) -> bool:
 # --------------------------------------------------------------------------- #
 # Fuentes: parámetros de cada petición y campos que se guardan                #
 # --------------------------------------------------------------------------- #
+
 
 def construir_params(nombre: str, appid: int) -> dict[str, str]:
     """
@@ -259,15 +248,22 @@ def construir_params(nombre: str, appid: int) -> dict[str, str]:
     """
     if nombre == "fichas":
         return {"appids": str(appid), "cc": "es", "l": "english"}
+
     if nombre == "resenas":
-        consulta = {"appid": appid, "num_per_page": 1, "languages": ["all"],
-                    "review_type": 0, "purchase_type": 1}
+        consulta = {
+            "appid": appid,
+            "num_per_page": 1,
+            "languages": ["all"],
+            "review_type": 0,
+            "purchase_type": 1,
+        }
+
         return {"input_json": json.dumps(consulta)}
+
     raise ValueError(f"fuente desconocida: {nombre}")
 
 
-def extraer_campos_fichas(appid: int, respuesta: Any,
-                          fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
+def extraer_campos_fichas(appid: int, respuesta: Any, fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
     """
     Se queda con los campos útiles de la ficha si el juego es del periodo de análisis.
 
@@ -292,6 +288,7 @@ def extraer_campos_fichas(appid: int, respuesta: Any,
     ficha = respuesta[str(appid)]
     if not ficha.get("success"):
         return None, MOTIVO_SIN_FICHA
+
     datos = ficha["data"]
     if datos.get("type") != "game":
         return None, MOTIVO_NO_ES_JUEGO
@@ -299,6 +296,7 @@ def extraer_campos_fichas(appid: int, respuesta: Any,
     lanzamiento = datos.get("release_date") or {}
     if lanzamiento.get("coming_soon"):
         return None, MOTIVO_NO_LANZADO
+
     fecha_tienda = lanzamiento.get("date", "")
     if not fecha_tienda_en_periodo(fecha_tienda) and not alguna_fecha_steam_en_periodo(fechas_steam):
         return None, MOTIVO_FUERA_PERIODO
@@ -319,6 +317,7 @@ def extraer_campos_fichas(appid: int, respuesta: Any,
         # Texto con HTML. Los idiomas marcados con * son aquellos a los que el juego también está doblado.
         "idiomas": datos.get("supported_languages"),
     }
+
     return campos, None
 
 
@@ -339,12 +338,14 @@ def extraer_campos_resenas(respuesta: Any) -> dict[str, Any]:
     KeyError, TypeError : si la respuesta no tiene el formato esperado.
     """
     resumen = respuesta["response"]["query_summary"]
-    return {"resenas_positivas": resumen["total_positive"],
-            "resenas_negativas": resumen["total_negative"]}
+
+    return {
+        "resenas_positivas": resumen["total_positive"],
+        "resenas_negativas": resumen["total_negative"],
+    }
 
 
-def extraer_campos(nombre: str, appid: int, respuesta: Any,
-                   fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
+def extraer_campos(nombre: str, appid: int, respuesta: Any, fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
     """
     Se queda con los campos útiles de la respuesta de una fuente.
 
@@ -366,14 +367,17 @@ def extraer_campos(nombre: str, appid: int, respuesta: Any,
     """
     if nombre == "fichas":
         return extraer_campos_fichas(appid, respuesta, fechas_steam)
+
     if nombre == "resenas":
         return extraer_campos_resenas(respuesta), None
+
     raise ValueError(f"fuente desconocida: {nombre}")
 
 
 # --------------------------------------------------------------------------- #
 # Filtro de periodo: fechas de lanzamiento por lotes con GetItems             #
 # --------------------------------------------------------------------------- #
+
 
 def construir_params_items_tienda(appids: list[int], datos_pedidos: dict[str, Any]) -> dict[str, str]:
     """
@@ -390,9 +394,12 @@ def construir_params_items_tienda(appids: list[int], datos_pedidos: dict[str, An
     --------
     Parámetros de la URL.
     """
-    consulta = {"ids": [{"appid": appid} for appid in appids],
-                "context": {"language": "english", "country_code": "ES"},
-                "data_request": datos_pedidos}
+    consulta = {
+        "ids": [{"appid": appid} for appid in appids],
+        "context": {"language": "english", "country_code": "ES"},
+        "data_request": datos_pedidos,
+    }
+
     return {"input_json": json.dumps(consulta)}
 
 
@@ -415,22 +422,8 @@ def pedir_items_tienda(lote: list[int], datos_pedidos: dict[str, Any]) -> dict[i
     KeyError, TypeError                  : si la respuesta no tiene el formato esperado.
     """
     respuesta = pedir_json_con_reintentos(URL_ITEMS_TIENDA, construir_params_items_tienda(lote, datos_pedidos))
+
     return {item.get("appid"): item for item in respuesta["response"].get("store_items", [])}
-
-
-def dividir_en_lotes(appids: list[int]) -> list[list[int]]:
-    """
-    Divide una lista de juegos en lotes de TAMANO_LOTE_ITEMS.
-
-    Parámetros
-    ----------
-    appids : juegos a dividir, en orden.
-
-    Devuelve
-    --------
-    Lista de lotes.
-    """
-    return [appids[i:i + TAMANO_LOTE_ITEMS] for i in range(0, len(appids), TAMANO_LOTE_ITEMS)]
 
 
 def obtener_motivo_descarte_periodo(item: dict[str, Any] | None) -> str | None:
@@ -451,13 +444,17 @@ def obtener_motivo_descarte_periodo(item: dict[str, Any] | None) -> str | None:
     """
     if not item or item.get("success") != 1:
         return None
+
     if item.get("type", 0) != 0:  # 0 = juego
         return MOTIVO_NO_ES_JUEGO
+
     if (item.get("release") or {}).get("is_coming_soon"):
         return MOTIVO_NO_LANZADO
+
     fechas = extraer_fechas_steam(item)
     if not any(fechas.values()) or alguna_fecha_steam_en_periodo(fechas):
         return None
+
     return MOTIVO_FUERA_PERIODO
 
 
@@ -480,13 +477,11 @@ def filtrar_juegos_periodo(appids: list[int], dir_captura: Path) -> None:
     en_periodo = set(leer_appids_jsonl(ruta_periodo))
     descartados = set(leer_appids_jsonl(ruta_descartados))
     pendientes = [appid for appid in appids if appid not in en_periodo and appid not in descartados]
-    lotes = dividir_en_lotes(pendientes)
+    lotes = [pendientes[i:i + TAMANO_LOTE_ITEMS] for i in range(0, len(pendientes), TAMANO_LOTE_ITEMS)]
 
     mostrar_cabecera(f"FILTRO DE PERIODO ({ARCHIVO_PERIODO})")
-    log.info("Ya filtrado: %s del periodo, %s descartados.",
-             formatear_numero(len(en_periodo)), formatear_numero(len(descartados)))
-    log.info("Pendientes: %s juegos en %s lotes de %d. Progreso cada %d lotes.",
-             formatear_numero(len(pendientes)), formatear_numero(len(lotes)), TAMANO_LOTE_ITEMS, LOG_CADA_LOTES)
+    log.info("Ya filtrado: %s del periodo, %s descartados.", formatear_numero(len(en_periodo)), formatear_numero(len(descartados)))
+    log.info("Pendientes: %s juegos en %s lotes de %d. Progreso cada %d lotes.", formatear_numero(len(pendientes)), formatear_numero(len(lotes)), TAMANO_LOTE_ITEMS, LOG_CADA_LOTES)
 
     inicio = time.monotonic()
     juegos_recorridos = 0
@@ -510,18 +505,17 @@ def filtrar_juegos_periodo(appids: list[int], dir_captura: Path) -> None:
 
         juegos_recorridos += len(lote)
         if numero_lote % LOG_CADA_LOTES == 0 or numero_lote == len(lotes):
-            mostrar_progreso(juegos_recorridos, len(pendientes), inicio,
-                             {obtener_etiqueta_archivo(ARCHIVO_PERIODO): len(en_periodo),
-                              obtener_etiqueta_archivo(ARCHIVO_DESCARTADOS): len(descartados)})
+            mostrar_progreso(juegos_recorridos, len(pendientes), inicio, {obtener_etiqueta_archivo(ARCHIVO_PERIODO): len(en_periodo), obtener_etiqueta_archivo(ARCHIVO_DESCARTADOS): len(descartados)})
+
         time.sleep(INTERVALO_ITEMS_S)
 
-    log.info("Resultado: %s juegos del periodo, %s descartados.",
-             formatear_numero(len(en_periodo)), formatear_numero(len(descartados)))
+    log.info("Resultado: %s juegos del periodo, %s descartados.", formatear_numero(len(en_periodo)), formatear_numero(len(descartados)))
 
 
 # --------------------------------------------------------------------------- #
 # Etiquetas: GetItems por lotes y nombres con GetTagList                      #
 # --------------------------------------------------------------------------- #
+
 
 def descargar_nombres_etiquetas() -> dict[int, str]:
     """
@@ -537,6 +531,7 @@ def descargar_nombres_etiquetas() -> dict[int, str]:
     KeyError, TypeError                  : si la respuesta no tiene el formato esperado.
     """
     respuesta = pedir_json_con_reintentos(URL_LISTA_ETIQUETAS, {"language": "english"})
+
     return {etiqueta["tagid"]: etiqueta["name"] for etiqueta in respuesta["response"]["tags"]}
 
 
@@ -554,6 +549,7 @@ def extraer_etiquetas(item: dict[str, Any], nombres: dict[int, str]) -> list[str
     Nombres de las etiquetas, de más a menos votada; vacía si el juego no tiene.
     """
     etiquetas = sorted(item.get("tags") or [], key=lambda etiqueta: etiqueta.get("weight", 0), reverse=True)
+
     return [nombres[etiqueta["tagid"]] for etiqueta in etiquetas if etiqueta.get("tagid") in nombres]
 
 
@@ -578,13 +574,16 @@ def descargar_etiquetas_bloque(bloque: list[int], nombres: dict[int, str]) -> di
         items = pedir_items_tienda(bloque, {"include_tag_count": MAX_ETIQUETAS})
     except (urllib.error.HTTPError, RuntimeError, KeyError, TypeError) as error:
         log.error("etiquetas: bloque de %d juegos no descargado (%s: %s).", len(bloque), type(error).__name__, error)
+
         return dict.fromkeys(bloque)
+
     return {appid: extraer_etiquetas(items[appid], nombres) if appid in items else [] for appid in bloque}
 
 
 # --------------------------------------------------------------------------- #
 # Peticiones HTTP: reintentos y ritmo de cada fuente                          #
 # --------------------------------------------------------------------------- #
+
 
 def pedir_json_con_reintentos(url: str, params: dict[str, str]) -> Any:
     """
@@ -617,23 +616,23 @@ def pedir_json_con_reintentos(url: str, params: dict[str, str]) -> Any:
                 datos = json.load(respuesta)
             if datos is None:
                 raise ValueError("respuesta vacía")
+
             return datos
         except urllib.error.HTTPError as error:
             if error.code not in (403, 429) and error.code < 500:
                 raise
+
             motivo = f"HTTP {error.code}"
         except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError) as error:
             motivo = f"{type(error).__name__}: {error}"
 
-        log.warning("Intento %d/%d fallido (%s). Reintento en %d s.",
-                    intento, MAX_REINTENTOS, motivo, ESPERA_ERROR_S)
+        log.warning("Intento %d/%d fallido (%s). Reintento en %d s.", intento, MAX_REINTENTOS, motivo, ESPERA_ERROR_S)
         time.sleep(ESPERA_ERROR_S)
 
     raise RuntimeError(f"agotados {MAX_REINTENTOS} reintentos")
 
 
-def consultar_fuente(nombre: str, appid: int,
-                     fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
+def consultar_fuente(nombre: str, appid: int, fechas_steam: dict[str, str | None]) -> tuple[dict[str, Any] | None, str | None]:
     """
     Pide una fuente para un juego, respetando su intervalo, y extrae los campos útiles.
 
@@ -659,8 +658,10 @@ def consultar_fuente(nombre: str, appid: int,
     espera = instante_ultima_peticion.get(nombre, 0.0) + fuente["intervalo_s"] - time.monotonic()
     if espera > 0:
         time.sleep(espera)
+
     try:
         respuesta = pedir_json_con_reintentos(fuente["url"], construir_params(nombre, appid))
+
         return extraer_campos(nombre, appid, respuesta, fechas_steam)
     finally:
         instante_ultima_peticion[nombre] = time.monotonic()
@@ -669,6 +670,7 @@ def consultar_fuente(nombre: str, appid: int,
 # --------------------------------------------------------------------------- #
 # Archivos JSONL: lectura y escritura                                         #
 # --------------------------------------------------------------------------- #
+
 
 def leer_registros_jsonl(ruta: Path) -> list[dict[str, Any]]:
     """
@@ -686,6 +688,7 @@ def leer_registros_jsonl(ruta: Path) -> list[dict[str, Any]]:
     """
     if not ruta.exists():
         return []
+
     registros = []
     with ruta.open(encoding="utf-8") as archivo:
         for linea in archivo:
@@ -695,6 +698,7 @@ def leer_registros_jsonl(ruta: Path) -> list[dict[str, Any]]:
                 continue
             if isinstance(registro, dict) and "appid" in registro:
                 registros.append(registro)
+
     return registros
 
 
@@ -741,6 +745,7 @@ def obtener_fecha_peticion() -> str:
 # Consola: formato de números y mensajes de progreso                          #
 # --------------------------------------------------------------------------- #
 
+
 def formatear_numero(numero: int) -> str:
     """
     Formatea un entero con punto como separador de miles (201.333).
@@ -785,6 +790,7 @@ def formatear_duracion(segundos: float) -> str:
     Duración como texto.
     """
     minutos = int(segundos // 60)
+
     return f"{minutos // 60} h {minutos % 60:02d} min"
 
 
@@ -816,23 +822,6 @@ def mostrar_cabecera(titulo: str) -> None:
     log.info("=" * ANCHO_CABECERA)
 
 
-def contar_por_archivo(guardados: set[int], descartados: set[int]) -> dict[str, int]:
-    """
-    Cuenta los juegos guardados y descartados, por etiqueta de archivo.
-
-    Parámetros
-    ----------
-    guardados   : appids guardados en ARCHIVO_FICHAS.
-    descartados : appids descartados.
-
-    Devuelve
-    --------
-    Número de juegos por etiqueta de archivo (fichas, descartados).
-    """
-    return {obtener_etiqueta_archivo(ARCHIVO_FICHAS): len(guardados),
-            obtener_etiqueta_archivo(ARCHIVO_DESCARTADOS): len(descartados)}
-
-
 def mostrar_estado_archivos(guardados: set[int], descartados: set[int]) -> None:
     """
     Escribe en el log cuántos juegos hay guardados y descartados.
@@ -859,17 +848,14 @@ def mostrar_progreso(numero: int, total: int, inicio: float, contadores: dict[st
     contadores : número de juegos por archivo (etiqueta -> total).
     """
     segundos_por_juego = (time.monotonic() - inicio) / numero
-    texto_contadores = " · ".join(f"{etiqueta} {formatear_numero(cantidad)}"
-                                  for etiqueta, cantidad in contadores.items())
-    log.info("[%s/%s · %s %%]  %s  |  %s s/juego  |  quedan ~%s",
-             formatear_numero(numero), formatear_numero(total), formatear_decimal(100 * numero / total),
-             texto_contadores, formatear_decimal(segundos_por_juego, 2),
-             formatear_duracion(segundos_por_juego * (total - numero)))
+    texto_contadores = " · ".join(f"{etiqueta} {formatear_numero(cantidad)}" for etiqueta, cantidad in contadores.items())
+    log.info("[%s/%s · %s %%]  %s  |  %s s/juego  |  quedan ~%s", formatear_numero(numero), formatear_numero(total), formatear_decimal(100 * numero / total), texto_contadores, formatear_decimal(segundos_por_juego, 2), formatear_duracion(segundos_por_juego * (total - numero)))
 
 
 # --------------------------------------------------------------------------- #
 # Descarga: lista de juegos y datos de cada juego                             #
 # --------------------------------------------------------------------------- #
+
 
 def descargar_lista_juegos(api_key: str, destino: Path) -> None:
     """
@@ -893,9 +879,11 @@ def descargar_lista_juegos(api_key: str, destino: Path) -> None:
             for app in pagina.get("apps", []):
                 archivo.write(json.dumps(app, ensure_ascii=False) + "\n")
                 total += 1
+
             log.info("  %s juegos descargados", formatear_numero(total))
             if not pagina.get("have_more_results"):
                 break
+
             ultimo_appid = pagina["last_appid"]
 
     temporal.replace(destino)
@@ -923,8 +911,7 @@ def descargar_datos_por_juego(juegos_periodo: list[dict[str, Any]], dir_captura:
     ruta_descartados = dir_captura / ARCHIVO_DESCARTADOS
     guardados = set(leer_appids_jsonl(ruta_fichas))
     descartados = set(leer_appids_jsonl(ruta_descartados))
-    pendientes = [juego for juego in juegos_periodo
-                  if juego["appid"] not in guardados and juego["appid"] not in descartados]
+    pendientes = [juego for juego in juegos_periodo if juego["appid"] not in guardados and juego["appid"] not in descartados]
 
     mostrar_cabecera(f"DATOS POR JUEGO (etiquetas -> ficha -> reseñas -> {ARCHIVO_FICHAS})")
     nombres_etiquetas = descargar_nombres_etiquetas()
@@ -940,16 +927,16 @@ def descargar_datos_por_juego(juegos_periodo: list[dict[str, Any]], dir_captura:
             if juego["appid"] not in etiquetas:
                 bloque = [pendiente["appid"] for pendiente in pendientes[numero - 1:numero - 1 + TAMANO_LOTE_ITEMS]]
                 etiquetas = descargar_etiquetas_bloque(bloque, nombres_etiquetas)
+
             procesar_juego(juego, etiquetas[juego["appid"]], ruta_fichas, ruta_descartados, guardados, descartados)
             if numero % LOG_CADA == 0 or numero == len(pendientes):
-                mostrar_progreso(numero, len(pendientes), inicio, contar_por_archivo(guardados, descartados))
+                mostrar_progreso(numero, len(pendientes), inicio, {obtener_etiqueta_archivo(ARCHIVO_FICHAS): len(guardados), obtener_etiqueta_archivo(ARCHIVO_DESCARTADOS): len(descartados)})
     finally:
         mostrar_cabecera("RESUMEN")
         mostrar_estado_archivos(guardados, descartados)
 
 
-def procesar_juego(juego: dict[str, Any], etiquetas: list[str] | None, ruta_fichas: Path,
-                   ruta_descartados: Path, guardados: set[int], descartados: set[int]) -> None:
+def procesar_juego(juego: dict[str, Any], etiquetas: list[str] | None, ruta_fichas: Path, ruta_descartados: Path, guardados: set[int], descartados: set[int]) -> None:
     """
     Pide la ficha y las reseñas de un juego y lo guarda en una línea con sus etiquetas.
 
@@ -969,6 +956,7 @@ def procesar_juego(juego: dict[str, Any], etiquetas: list[str] | None, ruta_fich
     appid = juego["appid"]
     if etiquetas is None:
         log.error("appid %d no descargado (faltan sus etiquetas).", appid)
+
         return
 
     fechas_steam = {nombre: juego.get(nombre) for nombre in CAMPOS_FECHA_STEAM.values()}
@@ -978,10 +966,13 @@ def procesar_juego(juego: dict[str, Any], etiquetas: list[str] | None, ruta_fich
         if motivo is not None:
             anadir_linea_jsonl(ruta_descartados, registro | {"descartado_en": "fichas", "motivo": motivo})
             descartados.add(appid)
+
             return
+
         resenas, _ = consultar_fuente("resenas", appid, fechas_steam)
     except (urllib.error.HTTPError, RuntimeError, KeyError, TypeError) as error:
         log.error("appid %d no descargado (%s: %s).", appid, type(error).__name__, error)
+
         return
 
     anadir_linea_jsonl(ruta_fichas, registro | ficha | resenas | {"etiquetas": etiquetas})
@@ -991,6 +982,7 @@ def procesar_juego(juego: dict[str, Any], etiquetas: list[str] | None, ruta_fich
 # --------------------------------------------------------------------------- #
 # Argumentos de la línea de comandos                                          #
 # --------------------------------------------------------------------------- #
+
 
 def parsear_argumentos() -> argparse.Namespace:
     """
@@ -1002,10 +994,9 @@ def parsear_argumentos() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="Ingesta de juegos desde la API de Steam.")
     parser.add_argument("--api-key", help=f"Steam Web API key (solo si {ARCHIVO_LISTA_JUEGOS} no existe).")
-    parser.add_argument("--fecha", default=date.today().isoformat(),
-                        help="Carpeta de la captura en data/raw/ (por defecto, hoy).")
-    parser.add_argument("--limite", type=int,
-                        help=f"Recorrer solo los N primeros juegos de {ARCHIVO_LISTA_JUEGOS} (pruebas).")
+    parser.add_argument("--fecha", default=date.today().isoformat(), help="Carpeta de la captura en data/raw/ (por defecto, hoy).")
+    parser.add_argument("--limite", type=int, help=f"Recorrer solo los N primeros juegos de {ARCHIVO_LISTA_JUEGOS} (pruebas).")
+
     return parser.parse_args()
 
 
@@ -1013,10 +1004,10 @@ def parsear_argumentos() -> argparse.Namespace:
 # MAIN                                                                        #
 # =========================================================================== #
 
+
 def main() -> None:
     """Descarga la lista de juegos si falta, la filtra por periodo y pide los datos de cada juego."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s",
-                        datefmt="%d/%m %H:%M:%S")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%d/%m %H:%M:%S")
     args = parsear_argumentos()
 
     dir_captura = DIR_RAW / args.fecha
@@ -1045,8 +1036,7 @@ def main() -> None:
         log.warning("Descarga interrumpida. Relanza el mismo comando para continuar.")
         raise SystemExit(130)
     except (urllib.error.HTTPError, RuntimeError, KeyError, TypeError) as error:
-        raise SystemExit(f"Descarga detenida ({type(error).__name__}: {error}). "
-                         "Relanza el mismo comando para continuar.") from error
+        raise SystemExit(f"Descarga detenida ({type(error).__name__}: {error}). Relanza el mismo comando para continuar.") from error
 
 
 if __name__ == "__main__":

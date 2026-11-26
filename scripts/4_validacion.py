@@ -54,23 +54,24 @@ FIN_PERIODO = pd.Timestamp("2025-12-31")
 
 # Diseño de la Tarea 3.1: tabla -> {columna: tipo de pandas}.
 DISENO = {
-    "juegos": {"appid": "int64", "fecha_captura": "datetime64[ms]", "nombre": "str",
-               "fecha_lanzamiento": "datetime64[ms]", "resenas_positivas": "int64",
-               "resenas_negativas": "int64", "precio_base_centimos": "Int64",
-               "archivo_origen": "str", "registro_origen": "int64"},
+    "juegos": {"appid": "int64", "fecha_captura": "datetime64[ms]", "nombre": "str", "fecha_lanzamiento": "datetime64[ms]", "resenas_positivas": "int64", "resenas_negativas": "int64", "precio_base_centimos": "Int64", "archivo_origen": "str", "registro_origen": "int64"},
     "generos": {"appid": "int64", "fecha_captura": "datetime64[ms]", "genero": "str"},
     "categorias": {"appid": "int64", "fecha_captura": "datetime64[ms]", "categoria": "str"},
     "etiquetas": {"appid": "int64", "fecha_captura": "datetime64[ms]", "etiqueta": "str"},
     "idiomas": {"appid": "int64", "fecha_captura": "datetime64[ms]", "idioma": "str", "audio": "bool"},
-    "excluidos": {"appid": "int64", "fecha_captura": "datetime64[ms]", "nombre": "str", "motivo": "str",
-                  "detalle": "str", "archivo_origen": "str", "registro_origen": "int64"},
+    "excluidos": {"appid": "int64", "fecha_captura": "datetime64[ms]", "nombre": "str", "motivo": "str", "detalle": "str", "archivo_origen": "str", "registro_origen": "int64"},
 }
 TABLAS_CON_PROCEDENCIA = ("juegos", "excluidos")
 COLUMNAS_OPCIONALES = {("juegos", "precio_base_centimos")}
 CLAVE_JUEGO = ["appid", "fecha_captura"]
-CLAVES = {"juegos": CLAVE_JUEGO, "generos": [*CLAVE_JUEGO, "genero"],
-          "categorias": [*CLAVE_JUEGO, "categoria"], "etiquetas": [*CLAVE_JUEGO, "etiqueta"],
-          "idiomas": [*CLAVE_JUEGO, "idioma"], "excluidos": CLAVE_JUEGO}
+CLAVES = {
+    "juegos": CLAVE_JUEGO,
+    "generos": [*CLAVE_JUEGO, "genero"],
+    "categorias": [*CLAVE_JUEGO, "categoria"],
+    "etiquetas": [*CLAVE_JUEGO, "etiqueta"],
+    "idiomas": [*CLAVE_JUEGO, "idioma"],
+    "excluidos": CLAVE_JUEGO,
+}
 TABLAS_HIJAS = ("generos", "categorias", "etiquetas", "idiomas")
 MOTIVOS_EXCLUSION = {"fuera_periodo", "no_es_juego", "precio_anomalo"}
 PATRON_HTML = r"[<>*]"
@@ -85,6 +86,7 @@ ANCHO_TITULO = 70
 # --------------------------------------------------------------------------- #
 # Lectura y consola                                                           #
 # --------------------------------------------------------------------------- #
+
 
 def leer_appids_por_linea(ruta: Path) -> pd.Series:
     """
@@ -108,18 +110,8 @@ def leer_appids_por_linea(ruta: Path) -> pd.Series:
                 continue
             if isinstance(registro, dict):
                 appids[numero_linea] = registro.get("appid")
+
     return pd.Series(appids, dtype="Int64")
-
-
-def mostrar_titulo(titulo: str) -> None:
-    """
-    Escribe el título de una sección entre dos líneas de =.
-
-    Parámetros
-    ----------
-    titulo : texto del título.
-    """
-    print(f"\n{'=' * ANCHO_TITULO}\n{titulo}\n{'=' * ANCHO_TITULO}")
 
 
 def formatear_numero(numero: int) -> str:
@@ -141,6 +133,7 @@ def formatear_numero(numero: int) -> str:
 # Controles                                                                   #
 # --------------------------------------------------------------------------- #
 
+
 def controlar_estructura(tablas: dict[str, pd.DataFrame]) -> list[tuple[str, str, int]]:
     """
     Controla columnas, tipos, obligatorios y claves de cada tabla (controles 1-3).
@@ -157,13 +150,11 @@ def controlar_estructura(tablas: dict[str, pd.DataFrame]) -> list[tuple[str, str
     for nombre, columnas in DISENO.items():
         tabla = tablas[nombre]
         tipos = {columna: str(tipo) for columna, tipo in tabla.dtypes.items()}
-        controles.append((nombre, "columnas y tipos del diseño",
-                          sum(tipos.get(columna) != tipo for columna, tipo in columnas.items())
-                          + len(set(tipos) - set(columnas))))
+        controles.append((nombre, "columnas y tipos del diseño", sum(tipos.get(columna) != tipo for columna, tipo in columnas.items()) + len(set(tipos) - set(columnas))))
         obligatorias = [columna for columna in columnas if (nombre, columna) not in COLUMNAS_OPCIONALES]
         controles.append((nombre, "obligatorios sin nulos", int(tabla[obligatorias].isna().sum().sum())))
-        controles.append((nombre, f"clave ({', '.join(CLAVES[nombre])}) sin repetir",
-                          int(tabla.duplicated(CLAVES[nombre]).sum())))
+        controles.append((nombre, f"clave ({', '.join(CLAVES[nombre])}) sin repetir", int(tabla.duplicated(CLAVES[nombre]).sum())))
+
     return controles
 
 
@@ -180,12 +171,10 @@ def esta_en_juegos(tabla: pd.DataFrame, juegos: pd.DataFrame) -> pd.Series:
     --------
     True en las filas cuyo juego está en juegos.
     """
-    return pd.Series(pd.MultiIndex.from_frame(tabla[CLAVE_JUEGO]).isin(
-        pd.MultiIndex.from_frame(juegos[CLAVE_JUEGO])), index=tabla.index)
+    return pd.Series(pd.MultiIndex.from_frame(tabla[CLAVE_JUEGO]).isin(pd.MultiIndex.from_frame(juegos[CLAVE_JUEGO])), index=tabla.index)
 
 
-def controlar_contenido(tablas: dict[str, pd.DataFrame], fecha_captura: pd.Timestamp, archivo_origen: str,
-                        appids_raw: pd.Series) -> list[tuple[str, str, int]]:
+def controlar_contenido(tablas: dict[str, pd.DataFrame], fecha_captura: pd.Timestamp, archivo_origen: str, appids_raw: pd.Series) -> list[tuple[str, str, int]]:
     """
     Controla relaciones, rangos, categorías, procedencia y balance (controles 4-8).
 
@@ -201,12 +190,10 @@ def controlar_contenido(tablas: dict[str, pd.DataFrame], fecha_captura: pd.Times
     (tabla, control, casos que lo incumplen) por control.
     """
     juegos, excluidos = tablas["juegos"], tablas["excluidos"]
-    controles = [(nombre, "appid + fecha_captura existe en juegos",
-                  int((~esta_en_juegos(tablas[nombre], juegos)).sum())) for nombre in TABLAS_HIJAS]
+    controles = [(nombre, "appid + fecha_captura existe en juegos", int((~esta_en_juegos(tablas[nombre], juegos)).sum())) for nombre in TABLAS_HIJAS]
     controles += [
         ("excluidos", "ningún excluido está en juegos", int(esta_en_juegos(excluidos, juegos).sum())),
-        ("juegos", "fecha entre 01/01/2020 y 31/12/2025",
-         int((~juegos["fecha_lanzamiento"].between(INICIO_PERIODO, FIN_PERIODO)).sum())),
+        ("juegos", "fecha entre 01/01/2020 y 31/12/2025", int((~juegos["fecha_lanzamiento"].between(INICIO_PERIODO, FIN_PERIODO)).sum())),
         ("juegos", "reseñas no negativas", int((juegos[["resenas_positivas", "resenas_negativas"]] < 0).any(axis=1).sum())),
         ("juegos", "precio no negativo", int((juegos["precio_base_centimos"] < 0).sum())),
         ("excluidos", "motivo conocido", int((~excluidos["motivo"].isin(MOTIVOS_EXCLUSION)).sum())),
@@ -215,27 +202,33 @@ def controlar_contenido(tablas: dict[str, pd.DataFrame], fecha_captura: pd.Times
         valores = tablas[nombre][CLAVES[nombre][-1]]
         sucios = valores.ne(valores.str.strip()) | valores.eq("") | valores.str.contains(PATRON_HTML)
         controles.append((nombre, "valores limpios (sin espacios, vacíos ni HTML)", int(sucios.sum())))
+
     for nombre in TABLAS_CON_PROCEDENCIA:
         nombres = tablas[nombre]["nombre"]
-        controles.append((nombre, "nombre sin espacios sobrantes ni vacío",
-                          int((nombres.ne(nombres.str.strip()) | nombres.eq("")).sum())))
-    controles += [(nombre, f"fecha_captura = {fecha_captura:%Y-%m-%d}",
-                   int(tablas[nombre]["fecha_captura"].ne(fecha_captura).sum())) for nombre in DISENO]
+        controles.append((nombre, "nombre sin espacios sobrantes ni vacío", int((nombres.ne(nombres.str.strip()) | nombres.eq("")).sum())))
+
+    controles += [(nombre, f"fecha_captura = {fecha_captura:%Y-%m-%d}", int(tablas[nombre]["fecha_captura"].ne(fecha_captura).sum())) for nombre in DISENO]
     for nombre in TABLAS_CON_PROCEDENCIA:
         tabla = tablas[nombre]
         appid_en_linea = tabla["registro_origen"].map(appids_raw)
-        controles += [(nombre, "archivo_origen es el archivo RAW usado", int(tabla["archivo_origen"].ne(archivo_origen).sum())),
-                      (nombre, "registro_origen tiene el mismo appid en el RAW", int(appid_en_linea.ne(tabla["appid"]).fillna(True).sum()))]
+        controles += [
+            (nombre, "archivo_origen es el archivo RAW usado", int(tabla["archivo_origen"].ne(archivo_origen).sum())),
+            (nombre, "registro_origen tiene el mismo appid en el RAW", int(appid_en_linea.ne(tabla["appid"]).fillna(True).sum())),
+        ]
+
     registros = pd.concat([tablas[nombre][["archivo_origen", "registro_origen"]] for nombre in TABLAS_CON_PROCEDENCIA])
-    controles += [("juegos + excluidos", "registro_origen sin repetir", int(registros.duplicated().sum())),
-                  ("juegos + excluidos", f"suman los {formatear_numero(len(appids_raw))} registros RAW",
-                   abs(len(juegos) + len(excluidos) - len(appids_raw)))]
+    controles += [
+        ("juegos + excluidos", "registro_origen sin repetir", int(registros.duplicated().sum())),
+        ("juegos + excluidos", f"suman los {formatear_numero(len(appids_raw))} registros RAW", abs(len(juegos) + len(excluidos) - len(appids_raw))),
+    ]
+
     return controles
 
 
 # --------------------------------------------------------------------------- #
 # Argumentos de la línea de comandos                                          #
 # --------------------------------------------------------------------------- #
+
 
 def parsear_argumentos() -> argparse.Namespace:
     """
@@ -246,14 +239,15 @@ def parsear_argumentos() -> argparse.Namespace:
     Argumentos: fecha.
     """
     parser = argparse.ArgumentParser(description="Validación de las tablas preparadas de juegos de Steam.")
-    parser.add_argument("--fecha", default=FECHA_CAPTURA_POR_DEFECTO,
-                        help=f"Carpeta de la captura (por defecto, {FECHA_CAPTURA_POR_DEFECTO}).")
+    parser.add_argument("--fecha", default=FECHA_CAPTURA_POR_DEFECTO, help=f"Carpeta de la captura (por defecto, {FECHA_CAPTURA_POR_DEFECTO}).")
+
     return parser.parse_args()
 
 
 # =========================================================================== #
 # MAIN                                                                        #
 # =========================================================================== #
+
 
 def main() -> None:
     """Lee las tablas preparadas, aplica los controles y muestra su resultado."""
@@ -263,6 +257,7 @@ def main() -> None:
     faltan = [nombre for nombre in DISENO if not (dir_tablas / f"{nombre}{EXTENSION_TABLAS}").is_file()]
     if faltan or not (dir_captura / ARCHIVO_FICHAS).is_file():
         raise SystemExit(f"Faltan archivos: {faltan or ARCHIVO_FICHAS}. Ejecuta antes 3_transformacion.py.")
+
     try:
         fecha_captura = pd.to_datetime(args.fecha, format=FORMATO_CARPETA_CAPTURA)
     except ValueError:
@@ -277,10 +272,11 @@ def main() -> None:
     controles = controlar_estructura(tablas) + controlar_contenido(tablas, fecha_captura, archivo_origen, appids_raw)
 
     # Resultado: un control por línea y resumen final.
-    mostrar_titulo(f"CONTROLES ({dir_tablas.relative_to(RAIZ).as_posix()})")
+    print(f"\n{'=' * ANCHO_TITULO}\nCONTROLES ({dir_tablas.relative_to(RAIZ).as_posix()})\n{'=' * ANCHO_TITULO}")
     for tabla, control, incumplen in controles:
         estado = "OK   " if incumplen == 0 else "FALLO"
         print(f"  {estado} {tabla:20} {control:50} {formatear_numero(incumplen):>8}")
+
     fallos = sum(incumplen > 0 for _, _, incumplen in controles)
     print(f"\n  {len(controles) - fallos} de {len(controles)} controles correctos.")
     if fallos:
