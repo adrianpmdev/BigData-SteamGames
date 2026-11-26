@@ -16,17 +16,18 @@ Qué datos hacen falta para responder las preguntas y cómo serán las tablas pr
 | Concepto | Nuestro proyecto |
 |---|---|
 | **Pregunta** | Si fuera un estudio de videojuegos, ¿qué género y qué categoría de juego debería desarrollar?<br>1. ¿Qué géneros y categorías tienen mejor relación entre éxito (reseñas, % positivo) y competencia (número de juegos)?<br>2. ¿Cómo ha evolucionado la oferta de cada género entre 2020 y 2025, incluido el efecto del boom de la COVID en 2020?<br>3. ¿Qué precio da mejores resultados en cada género?<br>4. ¿Influyen el multijugador, el cooperativo o los idiomas (cuántos y cuáles) en el éxito de un juego? |
-| **Unidad de observación** | `juegos`: una fila por juego de Steam.<br>`generos`, `categorias`, `etiquetas` e `idiomas`: una fila por cada valor de un juego. |
-| **Clave candidata** | `juegos`: `appid`, que identifica un juego dentro de Steam.<br>`generos`, `categorias`, `etiquetas` e `idiomas`: `appid` + el valor (p. ej. `(appid, genero)`), que identifica cada valor una sola vez por juego. |
-| **Esquema de salida** | Tabla `juegos` y cuatro tablas que la amplían, `generos`, `categorias`, `etiquetas` e `idiomas`, unidas a ella por `appid` (detalladas en las tablas siguientes). |
+| **Unidad de observación** | `juegos`: una fila por juego de Steam y captura.<br>`generos`, `categorias`, `etiquetas` e `idiomas`: una fila por cada valor de un juego en una captura. |
+| **Clave candidata** | `juegos`: `appid` + `fecha_captura`. `appid` identifica un juego dentro de Steam y `fecha_captura` distingue la captura si se guardan varias.<br>`generos`, `categorias`, `etiquetas` e `idiomas`: `appid` + `fecha_captura` + el valor (p. ej. `(appid, fecha_captura, genero)`), que identifica cada valor una sola vez por juego y captura. |
+| **Esquema de salida** | Tabla `juegos` y cuatro tablas que la amplían, `generos`, `categorias`, `etiquetas` e `idiomas`, unidas a ella por `appid` + `fecha_captura` (detalladas en las tablas siguientes). |
 | **Alcance** | **Fuente:** captura propia de la API de Steam del 18/11/2026 (`data/raw/2026-11-18/`).<br>**Periodo:** juegos con alguna de sus cuatro fechas (tienda, Steam, original y salida del acceso anticipado) entre el 01/01/2020 y el 31/12/2025. A cada juego se le asigna la primera de esas fechas que cae en el periodo.<br>**Filtros:** solo juegos (no DLC, demos, bandas sonoras ni herramientas), ya lanzados y con ficha en la tienda de España. Solo las columnas necesarias para las cuatro preguntas del README.<br>**Población:** juegos publicados en la tienda Steam (mercado global). |
-| **Trazabilidad** | Archivo RAW (`archivo_origen`) y línea del juego en ese archivo (`registro_origen`). `generos`, `categorias`, `etiquetas` e `idiomas` llegan a esa línea por su `appid`. |
+| **Trazabilidad** | Fecha de la captura (`fecha_captura`), archivo RAW (`archivo_origen`) y línea del juego en ese archivo (`registro_origen`). `generos`, `categorias`, `etiquetas` e `idiomas` llegan a esa línea por `appid` + `fecha_captura`. |
 
 ### Tabla de salida: `juegos`
 
 | Columna | Tipo | Obligatoria | Descripción |
 |---|---|---|---|
-| `appid` | Entero | Sí | Identificador del juego en Steam. Clave candidata. |
+| `appid` | Entero | Sí | Identificador del juego en Steam. Clave candidata junto con `fecha_captura`. |
+| `fecha_captura` | Fecha | Sí | Fecha de la carpeta de la captura (`2026-11-18`). Clave candidata junto con `appid`. |
 | `nombre` | Texto | Sí | Nombre del juego. |
 | `fecha_lanzamiento` | Fecha | Sí | Primera fecha del juego que cae entre 2020 y 2025: la de la tienda, la de Steam, la original (p. ej. inicio del acceso anticipado) o la de salida del acceso anticipado. De ella se sacan el año y el mes. |
 | `resenas_positivas` | Entero | Sí | Número de reseñas positivas. |
@@ -42,12 +43,16 @@ Un juego sin géneros, categorías, etiquetas o idiomas no tiene filas en la tab
 | Tabla | Columna | Tipo | Obligatoria | Descripción |
 |---|---|---|---|---|
 | `generos` | `appid` | Entero | Sí | Juego al que pertenece el género. |
+| `generos` | `fecha_captura` | Fecha | Sí | Captura del juego al que pertenece el género. |
 | `generos` | `genero` | Texto | Sí | Género oficial del juego (Action, RPG, Indie…). |
 | `categorias` | `appid` | Entero | Sí | Juego al que pertenece la categoría. |
+| `categorias` | `fecha_captura` | Fecha | Sí | Captura del juego al que pertenece la categoría. |
 | `categorias` | `categoria` | Texto | Sí | Característica del juego (Single-player, Multi-player, Co-op, Online PvP…). |
 | `etiquetas` | `appid` | Entero | Sí | Juego al que pertenece la etiqueta. |
+| `etiquetas` | `fecha_captura` | Fecha | Sí | Captura del juego al que pertenece la etiqueta. |
 | `etiquetas` | `etiqueta` | Texto | Sí | Etiqueta de la tienda, votada por la comunidad (Roguelike, Survival, Pixel Graphics…). Detalla el nicho dentro de géneros muy amplios. |
 | `idiomas` | `appid` | Entero | Sí | Juego al que pertenece el idioma. |
+| `idiomas` | `fecha_captura` | Fecha | Sí | Captura del juego al que pertenece el idioma. |
 | `idiomas` | `idioma` | Texto | Sí | Idioma con interfaz o subtítulos (English, Spanish - Spain…). |
 | `idiomas` | `audio` | Booleano | Sí | Si el idioma tiene audio completo (doblaje). |
 
@@ -55,7 +60,7 @@ Un juego sin géneros, categorías, etiquetas o idiomas no tiene filas en la tab
 
 | Transformación | Columna original | Resultado | Motivo |
 |---|---|---|---|
-| Añadir procedencia | — | `archivo_origen` y `registro_origen` | Poder localizar cada registro limpio en su línea de la captura RAW. |
+| Añadir procedencia | — | `fecha_captura` en todas las tablas, y `archivo_origen` y `registro_origen` en `juegos` y `excluidos` | Poder localizar cada registro limpio en su línea de la captura RAW y distinguir capturas si se guardan varias. |
 | Seleccionar columnas | `nombre`, fechas, `generos`, `categorias`, `etiquetas`, `resenas_positivas`, `resenas_negativas`, `precio_base_centimos`, `es_gratis`, `moneda`, `idiomas` de `juegos_fichas` | Solo las columnas de las tablas de salida | Quedarse solo con lo necesario para las preguntas. |
 | Convertir texto a fecha | `fecha_lanzamiento` (`"9 Sep, 2026"`), `fecha_lanzamiento_steam`, `fecha_lanzamiento_original`, `fecha_salida_acceso_anticipado` (`"2021-02-02"`) | Fechas | Poder comparar y agrupar por fecha. |
 | Elegir fecha y filtrar periodo | `fecha_lanzamiento`, `fecha_lanzamiento_steam`, `fecha_lanzamiento_original`, `fecha_salida_acceso_anticipado` | `fecha_lanzamiento` (la primera que cae en 2020–2025). Se quitan los juegos sin ninguna fecha en el periodo | La captura deja un día de margen en cada extremo. Aquí se aplica el periodo exacto con las mismas cuatro fechas que usa la ingesta. |
@@ -128,9 +133,10 @@ Se aplican en este orden. Si un juego cumple varias reglas de exclusión, cuenta
 
 ### Procedencia y excluidos
 
-- Cada juego conserva `archivo_origen` (`data/raw/2026-11-18/juegos_fichas.jsonl`) y `registro_origen`, la línea del juego en ese archivo contada desde 0. Las tablas hijas llegan a ella por `appid`.
+- Todas las tablas llevan `fecha_captura` (`2026-11-18`) justo después de `appid`. Es la fecha de la carpeta de la captura. Si se guardan varias capturas, distingue un mismo juego en cada una.
+- Cada juego conserva `archivo_origen` (`data/raw/2026-11-18/juegos_fichas.jsonl`) y `registro_origen`, la línea del juego en ese archivo contada desde 0. Las tablas hijas llegan a ella por `appid` + `fecha_captura`.
 - Las líneas dañadas del archivo (vacías o que no son JSON) se apartan y se cuentan. En esta captura hay 0.
-- Los excluidos se guardan en la tabla `excluidos` con `appid`, `nombre`, `motivo`, `detalle` (la regla concreta), `archivo_origen` y `registro_origen`.
+- Los excluidos se guardan en la tabla `excluidos` con `appid`, `fecha_captura`, `nombre`, `motivo`, `detalle` (la regla concreta), `archivo_origen` y `registro_origen`.
 
 ### Recuentos
 
@@ -163,9 +169,9 @@ Al desplegar las listas cambia la unidad de observación: en `juegos` cada fila 
 
 Dictators:No Peace Countryballs (1139890) en `juegos`:
 
-| appid | nombre | fecha_lanzamiento | resenas_positivas | resenas_negativas | precio_base_centimos | archivo_origen | registro_origen |
-|---|---|---|---|---|---|---|---|
-| 1139890 | Dictators:No Peace Countryballs | 2020-01-01 | 5885 | 360 | 109 | data/raw/2026-11-18/juegos_fichas.jsonl | 3925 |
+| appid | fecha_captura | nombre | fecha_lanzamiento | resenas_positivas | resenas_negativas | precio_base_centimos | archivo_origen | registro_origen |
+|---|---|---|---|---|---|---|---|---|
+| 1139890 | 2026-11-18 | Dictators:No Peace Countryballs | 2020-01-01 | 5885 | 360 | 109 | data/raw/2026-11-18/juegos_fichas.jsonl | 3925 |
 
 Y en las tablas hijas: 4 filas en `generos` (Casual, Indie, Simulation, Strategy), 2 en `categorias` (Family Sharing, Single-player), 8 en `etiquetas` y 11 en `idiomas` (English, French, German…).
 
@@ -179,17 +185,17 @@ Código: `scripts/4_validacion.py`. Lee las tablas de `data/processed/2026-11-18
 
 ### Controles
 
-Resultado: **39 de 39 controles correctos**. Para confirmar que los controles funcionan, se probaron con errores metidos a propósito (clave repetida, precio negativo, nombre vacío, HTML en un idioma, tipo cambiado, línea de origen equivocada o repetida, archivo de origen distinto…) y todos los detectaron.
+Resultado: **45 de 45 controles correctos**. Para confirmar que los controles funcionan, se probaron con errores metidos a propósito (clave repetida, precio negativo, nombre vacío, HTML en un idioma, tipo cambiado, línea de origen equivocada o repetida, archivo de origen distinto, fecha de captura cambiada…) y todos los detectaron.
 
 | Control | Tablas | Qué comprueba | Resultado |
 |---|---|---|---|
 | Columnas y tipos | Todas | Las columnas y tipos de la 3.1: fecha como fecha, precio como entero con nulos, `audio` como booleano… | 0 errores |
 | Obligatorios | Todas | Ningún nulo, salvo en `precio_base_centimos` | 0 nulos |
-| Claves | Todas | `appid` en `juegos` y `excluidos`, `(appid, valor)` en las tablas hijas | 0 repetidas |
-| Relaciones | Hijas y `excluidos` | Todo `appid` de las tablas hijas está en `juegos` y ningún excluido está en `juegos` | 0 errores |
+| Claves | Todas | `(appid, fecha_captura)` en `juegos` y `excluidos`, `(appid, fecha_captura, valor)` en las tablas hijas | 0 repetidas |
+| Relaciones | Hijas y `excluidos` | Todo `appid` + `fecha_captura` de las tablas hijas está en `juegos` y ningún excluido está en `juegos` | 0 errores |
 | Rangos | `juegos` | Fecha entre el 01/01/2020 y el 31/12/2025, reseñas y precio no negativos | 0 fuera de rango |
 | Categorías | Todas | Motivo de exclusión conocido. Valores y nombres sin espacios sobrantes ni vacíos, y valores sin restos de HTML | 0 errores |
-| Procedencia | `juegos` y `excluidos` | `archivo_origen` es `data/raw/2026-11-18/juegos_fichas.jsonl`, `registro_origen` no se repite y en esa línea del RAW está el mismo `appid` | 0 errores |
+| Procedencia | Todas | `fecha_captura` es `2026-11-18` en todas las tablas. En `juegos` y `excluidos`, `archivo_origen` es `data/raw/2026-11-18/juegos_fichas.jsonl`, `registro_origen` no se repite y en esa línea del RAW está el mismo `appid` | 0 errores |
 | Balance | `juegos` + `excluidos` | Suman los 81.282 registros de la captura | Cuadra |
 | Guardado | Todas | Al volver a leer cada Parquet, el contenido y los tipos son idénticos. Lo comprueba `3_transformacion.py` al guardar | Idénticas |
 
