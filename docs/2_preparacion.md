@@ -53,8 +53,8 @@ Un juego sin géneros, categorías, etiquetas o idiomas no tiene filas en la tab
 | `etiquetas` | `etiqueta` | Texto | Sí | Etiqueta de la tienda, votada por la comunidad (Roguelike, Survival, Pixel Graphics…). Detalla el nicho dentro de géneros muy amplios. |
 | `idiomas` | `appid` | Entero | Sí | Juego al que pertenece el idioma. |
 | `idiomas` | `fecha_captura` | Fecha | Sí | Captura del juego al que pertenece el idioma. |
-| `idiomas` | `idioma` | Texto | Sí | Idioma con interfaz o subtítulos (English, Spanish - Spain…). |
-| `idiomas` | `audio` | Booleano | Sí | Si el idioma tiene audio completo (doblaje). |
+| `idiomas` | `idioma` | Texto | Sí | Idioma en el que están los textos del juego (English, Spanish - Spain…). |
+| `idiomas` | `audio` | Booleano | Sí | Si el juego también está doblado a ese idioma. |
 
 ### Transformaciones necesarias
 
@@ -65,7 +65,7 @@ Un juego sin géneros, categorías, etiquetas o idiomas no tiene filas en la tab
 | Convertir texto a fecha | `fecha_lanzamiento` (`"9 Sep, 2026"`), `fecha_lanzamiento_steam`, `fecha_lanzamiento_original`, `fecha_salida_acceso_anticipado` (`"2021-02-02"`) | Fechas | Poder comparar y agrupar por fecha. |
 | Elegir fecha y filtrar periodo | `fecha_lanzamiento`, `fecha_lanzamiento_steam`, `fecha_lanzamiento_original`, `fecha_salida_acceso_anticipado` | `fecha_lanzamiento` (la primera que cae en 2020–2025). Se quitan los juegos sin ninguna fecha en el periodo | La captura deja un día de margen en cada extremo. Aquí se aplica el periodo exacto con las mismas cuatro fechas que usa la ingesta. |
 | Separar listas en tablas | `generos`, `categorias`, `etiquetas` (listas) | Tablas `generos`, `categorias` y `etiquetas`, con una fila por valor | Agrupar por género o categoría sin desagregar las listas en cada análisis. Además, cada fila tiene una clave clara. |
-| Separar idiomas | `idiomas` (texto con HTML: `English<strong>*</strong>, French`) | Tabla `idiomas`, con una fila por idioma y si tiene audio | La pregunta 4 necesita cuántos idiomas tiene cada juego y cuáles son los más frecuentes. Los marcados con `*` tienen audio completo. |
+| Separar idiomas | `idiomas` (texto con HTML: `English<strong>*</strong>, French`) | Tabla `idiomas`, con una fila por idioma y si también está doblado a ese idioma | La pregunta 4 necesita cuántos idiomas tiene cada juego y cuáles son los más frecuentes. Los marcados con `*` también están doblados. |
 | Unificar valores | `nombre`, `generos`, `categorias`, `etiquetas`, `idiomas` | Valores sin espacios sobrantes y con el mismo formato | Evitar que el mismo valor cuente como dos distintos. |
 | Completar el precio | `precio_base_centimos`, `es_gratis` | `precio_base_centimos` = 0 en juegos gratis | Los juegos gratis no traen precio. Con 0 tienen un valor comparable y se identifican fácilmente. |
 | Tratar valores ausentes | Listas vacías (`generos`, `categorias`, `etiquetas`), `idiomas` nulo y juegos de pago sin precio | Sin filas en la tabla correspondiente y `precio_base_centimos` nulo | Distinguir "sin dato" de un valor real (p. ej. no poner precio 0 a un juego de pago). |
@@ -229,7 +229,7 @@ En `data/processed/2026-11-18/`, en formato Parquet (7,8 MB en total). Parquet g
 | `generos.parquet` | 236.231 | Un género de un juego por fila |
 | `categorias.parquet` | 392.094 | Una categoría de un juego por fila |
 | `etiquetas.parquet` | 1.344.486 | Una etiqueta de un juego por fila |
-| `idiomas.parquet` | 333.369 | Un idioma de un juego por fila, con si tiene audio |
+| `idiomas.parquet` | 333.369 | Un idioma de un juego por fila, con si también está doblado a ese idioma |
 | `excluidos.parquet` | 203 | Un juego apartado por fila, con su motivo |
 
 ### Ejecución

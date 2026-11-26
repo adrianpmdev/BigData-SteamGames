@@ -13,7 +13,7 @@ Reglas (en orden, un juego excluido cuenta solo en la primera regla que cumple)
 5. Gratis sin precio, o gratis con precio y Free To Play       -> precio 0.
 6. De pago sin precio o precio en USD                          -> precio nulo.
 7. Fechas: se convierten y se asigna la primera dentro del periodo.
-8. Idiomas: una fila por idioma, con si tiene audio (*). Sin filas si declara 100 o más.
+8. Idiomas: una fila por idioma, con si también está doblado (*). Sin filas si declara 100 o más.
 9. Géneros, categorías y etiquetas: una fila por valor en su tabla.
 10. Nombre con espacios al principio o al final              -> quitar esos espacios.
 Juegos y sus tablas hijas se ordenan por la fecha del juego (y appid). Excluidos, por appid.
@@ -25,7 +25,7 @@ Archivos generados (data/processed/<fecha>/)
     generos.parquet      Un género de un juego por fila (clave appid + fecha_captura + genero).
     categorias.parquet   Una categoría de un juego por fila (clave appid + fecha_captura + categoria).
     etiquetas.parquet    Una etiqueta de un juego por fila (clave appid + fecha_captura + etiqueta).
-    idiomas.parquet      Un idioma de un juego por fila, con audio (clave appid + fecha_captura + idioma).
+    idiomas.parquet      Un idioma de un juego por fila, con si está doblado (clave appid + fecha_captura + idioma).
     excluidos.parquet    Juegos excluidos, con motivo, detalle de la regla, archivo_origen y
                          registro_origen (clave appid + fecha_captura).
 Procedencia: fecha_captura es la fecha de la carpeta de la captura y distingue capturas si se
@@ -267,7 +267,7 @@ def corregir_precio(juegos: pd.DataFrame) -> pd.Series:
 
 def separar_idiomas(texto: object) -> list[tuple[str, bool]]:
     """
-    Separa el texto de idiomas en una lista de idiomas, indicando cuáles tienen audio.
+    Separa el texto de idiomas en una lista de idiomas, indicando a cuáles está doblado el juego.
 
     Parámetros
     ----------
@@ -275,7 +275,7 @@ def separar_idiomas(texto: object) -> list[tuple[str, bool]]:
 
     Devuelve
     --------
-    (idioma, tiene audio) por idioma. Vacía si no hay dato o si el juego declara
+    (idioma, está doblado) por idioma. Vacía si no hay dato o si el juego declara
     MIN_IDIOMAS_NO_FIABLE o más.
     """
     if not isinstance(texto, str):
@@ -332,7 +332,7 @@ def desplegar_lista(juegos: pd.DataFrame, columna: str, nombre_valor: str) -> pd
 
 def desplegar_idiomas(juegos: pd.DataFrame) -> pd.DataFrame:
     """
-    Separa el texto de idiomas en una fila por idioma y juego, con si tiene audio.
+    Separa el texto de idiomas en una fila por idioma y juego, con si también está doblado.
 
     Parámetros
     ----------
@@ -417,7 +417,7 @@ def guardar_tablas(tablas: dict[str, pd.DataFrame], dir_salida: Path) -> None:
 def mostrar_antes_despues(fichas: pd.DataFrame, juegos: pd.DataFrame, idiomas: pd.DataFrame) -> None:
     """
     Muestra fecha, precio e idiomas antes y después de transformar en dos juegos de
-    ejemplo: el primer juego gratis y el primero con 3 idiomas o más, alguno con audio.
+    ejemplo: el primer juego gratis y el primero con 3 idiomas o más, alguno doblado.
 
     Parámetros
     ----------
@@ -439,7 +439,7 @@ def mostrar_antes_despues(fichas: pd.DataFrame, juegos: pd.DataFrame, idiomas: p
         print(f"  precio:  {precio_original!s:45} -> {preparado['precio_base_centimos']}")
         suyos = idiomas[idiomas["appid"] == appid]
         print(f"  idiomas: {str(original['idiomas'])[:43]!r:45} -> {len(suyos)} idiomas "
-              f"({int(suyos['audio'].sum())} con audio): {', '.join(suyos['idioma'])}")
+              f"({int(suyos['audio'].sum())} doblados): {', '.join(suyos['idioma'])}")
 
 
 # --------------------------------------------------------------------------- #

@@ -316,7 +316,7 @@ def extraer_campos_fichas(appid: int, respuesta: Any,
         "precio_base_centimos": precio.get("initial"),
         "descuento_pct": precio.get("discount_percent"),
         "moneda": precio.get("currency"),
-        # Texto con HTML; los idiomas marcados con * tienen audio completo.
+        # Texto con HTML. Los idiomas marcados con * son aquellos a los que el juego también está doblado.
         "idiomas": datos.get("supported_languages"),
     }
     return campos, None
