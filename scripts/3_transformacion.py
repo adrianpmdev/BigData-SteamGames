@@ -20,20 +20,22 @@ Juegos y sus tablas hijas se ordenan por la fecha del juego (y appid). Excluidos
 
 Archivos generados (data/processed/<fecha>/)
 ------------------
-    juegos.parquet       Un juego por fila (clave appid), con archivo_origen y registro_origen.
-    generos.parquet      Un género de un juego por fila (clave appid + genero).
-    categorias.parquet   Una categoría de un juego por fila (clave appid + categoria).
-    etiquetas.parquet    Una etiqueta de un juego por fila (clave appid + etiqueta).
-    idiomas.parquet      Un idioma de un juego por fila, con audio (clave appid + idioma).
-    excluidos.parquet    Juegos excluidos, con motivo, detalle de la regla, archivo_origen y
+    juegos.parquet       Un juego por fila (clave appid + fecha_captura), con archivo_origen y
                          registro_origen.
-Procedencia: archivo_origen es la ruta del archivo RAW y registro_origen la línea del juego en
-ese archivo, contada desde 0.
+    generos.parquet      Un género de un juego por fila (clave appid + fecha_captura + genero).
+    categorias.parquet   Una categoría de un juego por fila (clave appid + fecha_captura + categoria).
+    etiquetas.parquet    Una etiqueta de un juego por fila (clave appid + fecha_captura + etiqueta).
+    idiomas.parquet      Un idioma de un juego por fila, con audio (clave appid + fecha_captura + idioma).
+    excluidos.parquet    Juegos excluidos, con motivo, detalle de la regla, archivo_origen y
+                         registro_origen (clave appid + fecha_captura).
+Procedencia: fecha_captura es la fecha de la carpeta de la captura y distingue capturas si se
+guardan varias. archivo_origen es la ruta del archivo RAW y registro_origen la línea del juego
+en ese archivo, contada desde 0.
 Después de guardarlas, se vuelven a leer y se comprueba que conservan contenido y tipos.
 
 Argumentos
 ----------
-    --fecha   Carpeta de la captura en data/raw/. Por defecto, 2026-11-18.
+    --fecha   Carpeta de la captura en data/raw/, con formato AAAA-MM-DD. Por defecto, 2026-11-18.
 
 Uso
 ---
@@ -58,6 +60,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 DIR_RAW = RAIZ / "data" / "raw"
 DIR_PROCESSED = RAIZ / "data" / "processed"
 FECHA_CAPTURA_POR_DEFECTO = "2026-11-18"
+FORMATO_CARPETA_CAPTURA = "%Y-%m-%d"
 ARCHIVO_FICHAS = "juegos_fichas.jsonl"
 
 INICIO_PERIODO = pd.Timestamp("2020-01-01")
@@ -363,6 +366,24 @@ def ordenar_como_juegos(tabla: pd.DataFrame, juegos: pd.DataFrame, nombre_valor:
         ["posicion", nombre_valor]).drop(columns="posicion")
 
 
+def anadir_fecha_captura(tabla: pd.DataFrame, fecha_captura: pd.Timestamp) -> pd.DataFrame:
+    """
+    Añade la fecha de la captura a una tabla de salida, justo después de appid.
+
+    Parámetros
+    ----------
+    tabla         : tabla de salida.
+    fecha_captura : fecha de la carpeta de la captura.
+
+    Devuelve
+    --------
+    Tabla con fecha_captura después de appid.
+    """
+    columnas = list(tabla.columns)
+    columnas.insert(columnas.index("appid") + 1, "fecha_captura")
+    return tabla.assign(fecha_captura=fecha_captura).astype({"fecha_captura": "datetime64[ms]"})[columnas]
+
+
 def guardar_tablas(tablas: dict[str, pd.DataFrame], dir_salida: Path) -> None:
     """
     Guarda cada tabla en Parquet, la vuelve a leer y comprueba que no ha cambiado.
@@ -449,6 +470,10 @@ def main() -> None:
     dir_captura = DIR_RAW / args.fecha
     if not (dir_captura / ARCHIVO_FICHAS).is_file():
         raise SystemExit(f"No existe {dir_captura / ARCHIVO_FICHAS}.")
+    try:
+        fecha_captura = pd.to_datetime(args.fecha, format=FORMATO_CARPETA_CAPTURA)
+    except ValueError:
+        raise SystemExit(f"La carpeta de la captura ({args.fecha}) no es una fecha AAAA-MM-DD.") from None
     archivo_origen = (dir_captura / ARCHIVO_FICHAS).relative_to(RAIZ).as_posix()
 
     # Lectura de la captura RAW, con la línea de cada registro, y comprobación de columnas.
@@ -479,6 +504,9 @@ def main() -> None:
 
     # Tabla de excluidos con su motivo y procedencia.
     tablas["excluidos"] = excluidos.assign(archivo_origen=archivo_origen)[COLUMNAS_EXCLUIDOS].sort_values("appid")
+
+    # Fecha de la captura después de appid en todas las tablas (parte de su clave).
+    tablas = {nombre: anadir_fecha_captura(tabla, fecha_captura) for nombre, tabla in tablas.items()}
 
     # Guardado en Parquet y relectura para comprobar contenido y tipos.
     dir_salida = DIR_PROCESSED / args.fecha
